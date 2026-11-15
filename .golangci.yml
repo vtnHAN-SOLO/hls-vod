@@ -1,0 +1,78 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - contextcheck
+    - depguard
+    - errorlint
+    - forbidigo
+    - gosec
+    - misspell
+    - noctx
+    - revive
+    - sloglint
+    - unconvert
+    - unparam
+  settings:
+    # handler, service and store must never touch the filesystem: request and
+    # database values reach files only through internal/mediapath. depguard
+    # bans the path packages; it works on imports only, so the os and
+    # net/http file functions are banned with forbidigo below (os itself is
+    # still needed for os.Exit and friends).
+    depguard:
+      rules:
+        no-paths-in-request-layers:
+          files:
+            - "**/internal/handler/**"
+            - "**/internal/service/**"
+            - "**/internal/store/**"
+          deny:
+            - pkg: path/filepath
+              desc: build media paths with internal/mediapath, never from request or DB values here
+            - pkg: path$
+              desc: build media paths with internal/mediapath, never from request or DB values here
+            - pkg: io/ioutil
+              desc: file access goes through internal/mediapath
+    forbidigo:
+      # Match by the resolved package, so an aliased import is caught too.
+      analyze-types: true
+      forbid:
+        - pattern: ^os\.(Open|OpenFile|OpenRoot|OpenInRoot|DirFS|CopyFS|ReadFile|ReadDir|Readlink|Create|CreateTemp|WriteFile|Stat|Lstat|Mkdir|MkdirAll|MkdirTemp|Remove|RemoveAll|Rename|Link|Symlink|Truncate|Chmod|Chown|Lchown|Chtimes|Chdir)$
+          msg: no file access in handler/service/store; go through internal/mediapath
+        - pattern: ^http\.(ServeFile|ServeFileFS|FileServer|FileServerFS|Dir|FS)$
+          msg: no file access in handler/service/store; go through internal/mediapath
+        - pattern: ^fmt\.Print(f|ln)?$
+          msg: use log/slog for output
+        - pattern: ^log\.(Print|Fatal|Panic)(f|ln)?$
+          msg: use log/slog for output
+    sloglint:
+      kv-only: true
+      no-global: ""
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # The os/net/http file-function ban applies only to the request layers;
+      # transcoder, ffmpeg, mediapath, pgtest and migrations legitimately
+      # touch files.
+      - path-except: ^internal/(handler|service|store)/
+        linters: [forbidigo]
+        text: go through internal/mediapath
+      # Test helpers read paths from t.TempDir() and generated fixtures.
+      - path: _test\.go
+        linters: [gosec]
+        text: "G304:"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/vtnHAN-SOLO/hls-vod

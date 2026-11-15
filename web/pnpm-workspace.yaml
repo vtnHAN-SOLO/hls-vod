@@ -1,0 +1,9 @@
+# pnpm settings for web/ (pnpm reads them from here, not from .npmrc).
+
+# Refuse any package version, direct or transitive, published less than
+# 14 days ago: a compromised release is usually caught and yanked within days.
+minimumReleaseAge: 20160 # minutes
+
+# Dependencies may not run install scripts unless listed here. None need to:
+# vite's and tailwind's native binaries ship as optional platform packages.
+onlyBuiltDependencies: []

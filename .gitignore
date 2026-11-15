@@ -1,0 +1,28 @@
+# secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+*-secret.yaml
+!*-secret.enc.yaml
+
+# build
+bin/
+dist/
+node_modules/
+*.exe
+
+# local data
+var/
+media/
+*.mkv
+*.mp4
+postgres-data/
+
+# tooling
+.DS_Store
+.idea/
+.vscode/
+coverage.out

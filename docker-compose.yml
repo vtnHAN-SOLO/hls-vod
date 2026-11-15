@@ -1,0 +1,75 @@
+# Local development only. Tests never use this database (see CLAUDE.md Testing).
+# All credentials come from .env, which is gitignored; this file holds no values.
+# The compose project name decides the volume names. Public copies use the
+# folder's name (compose's default).
+
+services:
+  postgres:
+    image: postgres:16.15-alpine3.24 # keep in sync with internal/pgtest.Image
+    env_file: .env
+    ports:
+      # 127.0.0.1 only: Docker-published ports bypass ufw, so a bare
+      # "5432:5432" would expose Postgres to the whole LAN.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+    restart: unless-stopped
+
+  # Serves $MEDIA_ROOT/library/{id}/... at
+  # http://127.0.0.1:8081/media/{token}/{expires}/{id}/..., to URLs the api
+  # signed with MEDIA_SIGNING_KEY. Hardened like production: read-only root
+  # filesystem (only /tmp and the rendered config dir are writable), no
+  # capabilities, library mounted read-only.
+  media-delivery:
+    image: nginxinc/nginx-unprivileged:1.30.6-alpine3.24 # keep in sync with docker/nginx-media/nginx_test.go
+    ports:
+      # 127.0.0.1 only (see postgres). 8080 on the host is the api.
+      - "127.0.0.1:8081:8080"
+    # The signing key only, taken from .env; no value is written here. Not
+    # env_file: that would hand nginx DATABASE_URL and every other secret in
+    # .env. The image renders /etc/nginx/templates/*.template with it at
+    # start; the filter keeps nginx's own $variables untouched.
+    environment:
+      MEDIA_SIGNING_KEY: ${MEDIA_SIGNING_KEY:?set MEDIA_SIGNING_KEY in .env, generate it with openssl rand -base64 48}
+      NGINX_ENVSUBST_FILTER: ^MEDIA_SIGNING_KEY$$
+    volumes:
+      - type: bind
+        source: ./docker/nginx-media/default.conf.template
+        target: /etc/nginx/templates/default.conf.template
+        read_only: true
+      - type: bind
+        source: ./docker/nginx-media/05-require-media-signing-key.sh
+        target: /docker-entrypoint.d/05-require-media-signing-key.sh
+        read_only: true
+      - type: bind
+        source: ${MEDIA_ROOT:?set MEDIA_ROOT in .env, e.g. ./var/media}/library
+        target: /srv/media/library
+        read_only: true
+        # Fail instead of creating an empty dir, which would look "ready".
+        bind:
+          create_host_path: false
+    read_only: true
+    tmpfs:
+      - /tmp
+      # The rendered config (it holds the key): memory only, owned by nginx.
+      - /etc/nginx/conf.d:mode=0755,uid=101,gid=101
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 2s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

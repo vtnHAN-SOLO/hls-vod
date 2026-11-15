@@ -1,0 +1,182 @@
+# media-delivery: serves pre-transcoded HLS from a read-only library mount,
+# to holders of a URL the api signed.
+#
+#   GET /media/{token}/{expires}/{movie_id}/{file}
+#     ->  /srv/media/library/{movie_id}/{file}
+#
+# Stateless by construction: static files only, no upstreams, no cache, no
+# sessions, no request bodies. Tokens are checked here with the shared key,
+# never by calling the api. The container runs with a read-only root
+# filesystem, so this tier can be scaled to any number of replicas.
+#
+# A TEMPLATE: the image's entrypoint (20-envsubst-on-templates.sh) renders
+# it at start-up from /etc/nginx/templates/default.conf.template into
+# /etc/nginx/conf.d/default.conf, which nginx.conf includes inside http {}.
+# Only the media signing key is substituted (NGINX_ENVSUBST_FILTER), so the
+# key reaches nginx from the environment (a SOPS-encrypted Secret in
+# Kubernetes, .env locally) and is never in the image or the repository.
+# /etc/nginx/conf.d must therefore be writable: a tmpfs (compose) or an
+# emptyDir (Kubernetes). 05-require-media-signing-key.sh stops the
+# container first if the key is missing, short or not base64.
+
+# Cache-Control per response, chosen by path. Set once at server level with
+# add_header (without "always"), so it applies to 2xx/3xx only: a 404 for a
+# segment must never be cached as immutable, and a 403 or 410 never cached
+# at all. "private": the browser may keep what it was given, but a shared
+# cache must not, or it would keep serving a URL after it expired.
+map $uri $media_cache_control {
+    # Segments are written once and never change under the same name.
+    "~^/media/.+\.ts$"           "private, max-age=31536000, immutable";
+    # Playlists stay short: a retranscode may replace them.
+    "~^/media/.+\.m3u8$"         "private, max-age=10";
+    # Poster, thumbnail sprites and WebVTT (thumbnails, subtitles).
+    "~^/media/"                  "private, max-age=3600";
+    default                      "no-store";
+}
+
+server {
+    listen 8080;                  # non-root, all capabilities dropped: cannot bind 80
+    server_name _;
+    server_tokens off;
+
+    # GET and HEAD for media, OPTIONS for CORS preflight. Nothing else.
+    if ($request_method !~ ^(GET|HEAD|OPTIONS)$) {
+        return 405;
+    }
+    client_max_body_size 1k;
+
+    # CORS for the player: the SPA and the hls.js demo are other origins.
+    # "*" is safe because nothing here uses cookies or credentials: the
+    # signed URL carries its token in the path. "always", so the player can
+    # read a 403 or 410 too.
+    add_header Access-Control-Allow-Origin "*" always;
+    add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
+    add_header Access-Control-Allow-Headers "Range" always;
+    add_header Access-Control-Expose-Headers "Content-Length, Content-Range" always;
+    add_header Access-Control-Max-Age "86400" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Cache-Control $media_cache_control;
+
+    # --- media ---------------------------------------------------------
+    #
+    # /media/{token}/{expires}/{movie_id}/{file}. The token lives in the
+    # PATH, not the query string: hls.js resolves every rung playlist and
+    # segment relative to the master URL, and relative resolution drops the
+    # query string. With the token in the path, every relative URL inherits
+    # it. It covers {expires} and {movie_id}, so one token opens the whole
+    # movie folder and nothing else.
+    #
+    # {movie_id} is a canonical lowercase UUID and the file names pass the
+    # same allowlist as internal/mediapath: elements of [A-Za-z0-9._-] not
+    # starting with ".", and only the extensions the pipeline writes. $uri
+    # is already percent-decoded and has "/../" resolved, so "%2e%2e%2f" and
+    # "../" never reach this match, and "{id}/../{other id}/" is checked
+    # against the other id's token. Hidden names (".{id}.partial-*" dirs,
+    # ".master.m3u8.tmp-*" files) are unreachable by the same rule. Anything
+    # that does not match falls to "location /media/" below: 403.
+    location ~ "^/media/(?<st>[A-Za-z0-9_-]{22})/(?<exp>[0-9]{1,12})/(?<movie_id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/(?<media_file>(?:[A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*\.(?:m3u8|ts|jpg|vtt))$" {
+        # A preflight carries no token of its own and returns no content.
+        if ($request_method = OPTIONS) {
+            return 204;
+        }
+
+        # token = base64url(md5("{expires}/{movie_id} {key}")), the same
+        # string internal/service.MediaSigner signs. The key goes LAST: with
+        # md5(key || message), one valid token would let anyone extend the
+        # message (length extension) and mint others. Not bound to the
+        # client IP: mobile networks and the reverse proxy change it.
+        secure_link $st,$exp;
+        secure_link_md5 "$exp/$movie_id ${MEDIA_SIGNING_KEY}";
+        if ($secure_link = "") {
+            return 403;           # missing, malformed or wrong token
+        }
+        if ($secure_link = "0") {
+            return 410;           # valid token, expired
+        }
+
+        alias /srv/media/library/$movie_id/$media_file;
+        disable_symlinks on;      # nothing in the library is a symlink; refuse any
+        autoindex off;
+
+        types {
+            application/vnd.apple.mpegurl m3u8;
+            video/mp2t                    ts;
+            image/jpeg                    jpg;
+            text/vtt                      vtt;
+        }
+        default_type application/octet-stream;
+    }
+
+    # --- probes ----------------------------------------------------------
+
+    # Liveness: nginx answers. Never touches the mount: a hung NFS must not
+    # make Kubernetes restart every pod, which would not fix the mount.
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Readiness: the library mount is really there and readable. The check
+    # is a subrequest that opens the directory (autoindex calls opendir):
+    # a missing mount is 404, an unreadable one 403, both become 503 here.
+    # The listing itself is discarded and never sent: auth_request keeps
+    # only the status, so the catalog of movie ids cannot be enumerated.
+    location = /readyz {
+        access_log off;
+        auth_request /_library_check/;
+        error_page 401 403 404 500 502 503 504 = @not_ready;
+        # "return" would run before the auth_request check; try_files runs
+        # after it, so the 200 is only reached when the check passed.
+        root /nonexistent;
+        try_files /_ @ready;
+    }
+
+    location @ready {
+        default_type application/json;
+        return 200 '{"status":"ready"}\n';
+    }
+
+    location @not_ready {
+        default_type application/json;
+        return 503 '{"status":"not ready","reason":"media library mount is missing or unreadable"}\n';
+    }
+
+    location = /_library_check/ {
+        internal;
+        alias /srv/media/library/;
+        autoindex on;
+        autoindex_format json;
+    }
+
+    # Every other /media/ URL: no token, a malformed one, or a file the
+    # signed location does not serve (directories, hidden or non-media
+    # names). 403 without touching the disk, so an unsigned request cannot
+    # even learn whether a movie id exists.
+    location /media/ {
+        return 403;
+    }
+
+    # Everything else.
+    location / {
+        return 404;
+    }
+}
+
+# /metrics: nginx has no Prometheus endpoint of its own. The
+# nginx-prometheus-exporter sidecar (added with the Kubernetes manifests)
+# reads stub_status here and serves /metrics. Loopback only: never
+# published, never reachable through the Service.
+server {
+    listen 127.0.0.1:8082;
+    server_tokens off;
+    access_log off;
+
+    location = /stub_status {
+        stub_status;
+    }
+
+    location / {
+        return 404;
+    }
+}
