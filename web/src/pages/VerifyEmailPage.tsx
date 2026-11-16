@@ -6,6 +6,7 @@ import { useAuthConfig } from "../auth/useAuthConfig";
 import { useLinkToken } from "../auth/useLinkToken";
 import { ResendVerification } from "../components/ResendVerification";
 import { describeSignupError } from "../lib/registration";
+import { AuthShell } from "../components/AuthShell";
 
 // A token is good once. React StrictMode runs effects twice, so the post
 // for a token is made once and shared.
@@ -46,20 +47,20 @@ export function VerifyEmailPage() {
 
   const failed = token === null ? "This link is incomplete. Open the link from the mail again." : error;
   return (
-    <main className="mx-auto flex max-w-sm flex-col gap-6 px-4 py-16">
-      <h1 className="text-2xl font-semibold">Confirm your email</h1>
+    <AuthShell>
+      <h1 className="text-2xl font-bold">Confirm your email</h1>
       {failed === null ? (
-        <p role="status" className="text-sm text-neutral-300">
+        <p role="status" className="text-sm text-fg-muted">
           Confirming your address…
         </p>
       ) : (
         <>
-          <p role="alert" className="text-sm text-red-300">
+          <p role="alert" className="text-sm text-danger">
             {failed}
           </p>
-          <p className="text-sm text-neutral-300">
+          <p className="text-sm text-fg-muted">
             Already confirmed?{" "}
-            <Link to="/login" className="underline hover:text-white/80">
+            <Link to="/login" className="underline hover:text-fg">
               Log in
             </Link>
             . Otherwise ask for a new mail:
@@ -67,6 +68,6 @@ export function VerifyEmailPage() {
           {config.data && <ResendVerification siteKey={config.data.turnstile_site_key} />}
         </>
       )}
-    </main>
+    </AuthShell>
   );
 }

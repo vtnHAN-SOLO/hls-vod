@@ -1,52 +1,37 @@
-import { useEffect, useRef } from "react";
+import { Button } from "./ui/Button";
+import { Dialog } from "./ui/Dialog";
 
 interface Props {
   message: string;
   confirmLabel: string;
+  title?: string;
   danger?: boolean;
   pending?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }
 
-/** A modal question: the native <dialog>, so focus, Escape and the backdrop come for free. */
-export function ConfirmDialog({ message, confirmLabel, danger = false, pending = false, onConfirm, onCancel }: Props) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    const d = ref.current;
-    if (d && !d.open) d.showModal();
-    return () => d?.close();
-  }, []);
+/** A modal question, on the shared Dialog. Cancel has focus first: the safe choice. */
+export function ConfirmDialog({
+  message,
+  confirmLabel,
+  title = "Are you sure?",
+  danger = false,
+  pending = false,
+  onConfirm,
+  onCancel,
+}: Props) {
   return (
-    <dialog
-      ref={ref}
-      onCancel={(e) => {
-        e.preventDefault();
-        onCancel();
-      }}
-      className="m-auto max-w-md rounded-lg border border-white/10 bg-neutral-900 p-6 text-neutral-100 backdrop:bg-black/60"
-    >
-      <p className="text-sm leading-relaxed">{message}</p>
+    <Dialog title={title} onClose={onCancel}>
+      <p className="text-sm leading-relaxed text-fg-muted">{message}</p>
       <div className="mt-6 flex justify-end gap-3">
-        <button
-          type="button"
-          onClick={onCancel}
-          className="rounded-md px-3 py-1.5 text-sm hover:bg-white/10"
-          autoFocus
-        >
+        <Button variant="ghost" onClick={onCancel} autoFocus>
           Cancel
-        </button>
-        <button
-          type="button"
-          disabled={pending}
-          onClick={onConfirm}
-          className={`rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-50 ${
-            danger ? "bg-red-600 hover:bg-red-500" : "bg-white/15 hover:bg-white/25"
-          }`}
-        >
+        </Button>
+        <Button variant={danger ? "danger" : "primary"} disabled={pending} onClick={onConfirm}>
           {confirmLabel}
-        </button>
+        </Button>
       </div>
-    </dialog>
+    </Dialog>
   );
 }

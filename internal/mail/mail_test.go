@@ -43,7 +43,7 @@ func TestResend(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	m := VerifyMessage("dana@example.com", "dana", "http://127.0.0.1:5173/verify-email#token=abc")
+	m := VerifyMessage("", "dana@example.com", "dana", "http://127.0.0.1:5173/verify-email#token=abc")
 	if err := NewResend(key, "Media <noreply@example.com>", srv.URL).Send(t.Context(), m); err != nil {
 		t.Fatal(err)
 	}
@@ -66,11 +66,11 @@ func TestResend(t *testing.T) {
 }
 
 func TestTemplatesEscape(t *testing.T) {
-	m := VerifyMessage("x@example.com", "<b>", `https://example.com/verify-email#token="><script>`)
+	m := VerifyMessage("", "x@example.com", "<b>", `https://example.com/verify-email#token="><script>`)
 	if strings.Contains(m.HTML, "<script>") || strings.Contains(m.HTML, "<b>") {
 		t.Fatalf("HTML not escaped: %s", m.HTML)
 	}
-	if e := AccountExistsMessage("x@example.com", "https://example.com/login"); e.Kind != KindAccountExists || !strings.Contains(e.Text, "/login") {
+	if e := AccountExistsMessage("", "x@example.com", "https://example.com/login"); e.Kind != KindAccountExists || !strings.Contains(e.Text, "/login") {
 		t.Fatalf("account-exists mail = %+v", e)
 	}
 }
@@ -128,7 +128,7 @@ func (b *syncBuffer) String() string {
 
 func TestOutbox(t *testing.T) {
 	const token = "SECRET-TOKEN-VALUE"
-	msg := VerifyMessage("dana@example.com", "dana", "https://example.com/verify-email#token="+token)
+	msg := VerifyMessage("", "dana@example.com", "dana", "https://example.com/verify-email#token="+token)
 	closeNow := func(t *testing.T, o *Outbox) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -214,4 +214,34 @@ func TestOutbox(t *testing.T) {
 			t.Fatalf("log sender: %s", logs.String())
 		}
 	})
+}
+
+// Every mail names the product as the deployment calls it (SITE_NAME), in
+// the subject, the body and the signature; "" is the neutral default. The
+// name is escaped in the HTML like any other value.
+func TestSiteName(t *testing.T) {
+	const link = "https://example.com/x#token=abc"
+	build := func(site string) []Message {
+		return []Message{
+			VerifyMessage(site, "a@example.com", "ann", link),
+			AccountExistsMessage(site, "a@example.com", link),
+			ResetMessage(site, "a@example.com", "ann", link),
+			GoogleLinkedMessage(site, "a@example.com", "ann", link),
+		}
+	}
+	for _, tt := range []struct{ site, want, wantHTML string }{
+		{"", DefaultSiteName, DefaultSiteName},
+		{"Moviebox", "Moviebox", "Moviebox"},
+		{"A&B <Films>", "A&B <Films>", "A&amp;B &lt;Films&gt;"},
+	} {
+		for _, m := range build(tt.site) {
+			if !strings.Contains(m.Subject, tt.want) || !strings.Contains(m.Text, tt.want) ||
+				!strings.HasSuffix(m.Text, "\n-- \n"+tt.want+"\n") || !strings.Contains(m.HTML, tt.wantHTML) {
+				t.Errorf("%s with site %q: subject %q, text %q", m.Kind, tt.site, m.Subject, m.Text)
+			}
+			if tt.site == "A&B <Films>" && strings.Contains(m.HTML, "<Films>") {
+				t.Errorf("%s: the site name reached the HTML unescaped", m.Kind)
+			}
+		}
+	}
 }

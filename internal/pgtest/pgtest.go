@@ -86,3 +86,19 @@ func randomHex(t *testing.T, n int) string {
 	}
 	return hex.EncodeToString(b)
 }
+
+// Publish makes a ready movie visible to viewers, the way an admin would
+// after uploading a poster and writing an overview: a stand-in poster hash
+// (no poster rows), an overview when it has none, published_at now. The
+// movies_published_check constraint still applies: a movie that is not
+// ready fails the test.
+func (d *DB) Publish(ctx context.Context, t *testing.T, movieID string) {
+	t.Helper()
+	if _, err := d.Pool.Exec(ctx, `
+		UPDATE movies SET poster_hash = sha256(id::text::bytea),
+		       overview = COALESCE(NULLIF(trim(overview), ''), 'An overview.'),
+		       published_at = now()
+		WHERE id = $1`, movieID); err != nil {
+		t.Fatalf("publishing movie %s: %v", movieID, err)
+	}
+}

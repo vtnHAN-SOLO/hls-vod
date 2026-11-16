@@ -1,12 +1,11 @@
-import { Link } from "react-router";
+import { ButtonLink } from "../components/ui/Button";
+import { FilmIcon } from "../components/ui/Icons";
+import { EmptyState } from "../components/ui/Primitives";
 
 export function NotFoundPage() {
   return (
-    <main className="mx-auto flex max-w-7xl flex-col items-center gap-3 px-6 py-24 text-center">
-      <p className="text-neutral-300">There is no page here.</p>
-      <Link to="/" className="rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20">
-        Browse movies
-      </Link>
+    <main className="mx-auto max-w-3xl px-4 py-24 sm:px-6">
+      <EmptyState icon={<FilmIcon size={28} />} title="There is no page here" action={<ButtonLink to="/browse">Browse movies</ButtonLink>} />
     </main>
   );
 }

@@ -39,14 +39,57 @@ type Movie struct {
 	RuntimeSec  *int
 	SourcePath  string  // inbox path; internal, never sent to clients
 	LibraryPath *string // "library/{id}/{version}" (or "library/{id}" for the old layout); internal
-	PosterPath  *string // relative to library/{id}/, e.g. "{version}/poster.jpg"
-	Status      MovieStatus
+	// BackdropPath is the landscape video frame the transcoder writes,
+	// relative to library/{id}/, e.g. "{version}/poster.jpg".
+	BackdropPath *string
+	Status       MovieStatus
 	// LibraryCleanupAfter: once past, the watcher removes every entry of
 	// library/{id}/ but the current version. Set when a retranscode
 	// publishes (old versions stay until no URL for them can be valid).
 	LibraryCleanupAfter *time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	// FeaturedAt is set while an admin features the movie on the home page.
+	FeaturedAt *time.Time
+	// PublishedAt is set while the movie is visible to viewers: only a
+	// ready movie with a poster and an overview (a CHECK on movies).
+	PublishedAt *time.Time
+	// PosterHash is the SHA-256 of the uploaded poster's largest variant,
+	// nil with no poster; PosterWidths its variants' widths, smallest
+	// first. Read with the movie, never the image bytes.
+	PosterHash   []byte
+	PosterWidths []int
+	// TopHeight is the tallest rendition's height, nil with no renditions.
+	// Read with the movie, never stored on its row.
+	TopHeight *int
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Published reports whether viewers can see the movie.
+func (m Movie) Published() bool { return m.PublishedAt != nil }
+
+// MovieMetadata is what an admin may edit on a movie. A nil field is left
+// as it is; Year and Overview are cleared with ClearYear / ClearOverview.
+type MovieMetadata struct {
+	Title         *string
+	Year          *int
+	ClearYear     bool
+	Overview      *string
+	ClearOverview bool
+}
+
+// Popular is a movie with the number of distinct users who watched it in a
+// window.
+type Popular struct {
+	Movie   Movie
+	Viewers int
+}
+
+// SubtitleTrack is one WebVTT subtitle file of a movie's current version.
+type SubtitleTrack struct {
+	Path     string  // relative to library/{id}/, starts with the version: "{version}/subs/0_eng.vtt"
+	Language string  // the source's ISO 639 tag, "und" when unknown
+	Label    *string // the stream's title ("SDH", "Commentary"); nil when none
+	Position int     // the order of the source's subtitle streams
 }
 
 // Rendition is one HLS rung of a movie.

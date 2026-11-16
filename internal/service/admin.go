@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/vtnHAN-SOLO/hls-vod/internal/model"
+	"github.com/vtnHAN-SOLO/hls-vod/internal/poster"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/store"
 )
 
@@ -39,7 +41,29 @@ var (
 	// ErrNotReadyForRetranscode means a retranscode of a movie that is not
 	// ready.
 	ErrNotReadyForRetranscode = errors.New("only a ready movie can be retranscoded")
+	// ErrNotReadyForFeature means featuring a movie that is not ready.
+	ErrNotReadyForFeature = errors.New("only a ready movie can be featured")
+	// ErrNotPublishedForFeature means featuring a ready movie that viewers
+	// cannot see.
+	ErrNotPublishedForFeature = errors.New("only a published movie can be featured")
+	// ErrMoviePublished means a change a published movie cannot take
+	// (removing its poster, clearing its overview): unpublish it first.
+	ErrMoviePublished = errors.New("the movie is published: unpublish it first")
 )
+
+// The reasons a movie cannot be published, as the API spells them, in the
+// order they are checked.
+const (
+	ReasonNotReady        = string(store.RefusedNotReady)
+	ReasonMissingPoster   = string(store.RefusedMissingPoster)
+	ReasonMissingOverview = string(store.RefusedMissingOverview)
+)
+
+// PublishRefusedError says why a movie cannot be published: Reason is one
+// of ReasonNotReady, ReasonMissingPoster, ReasonMissingOverview.
+type PublishRefusedError struct{ Reason string }
+
+func (e *PublishRefusedError) Error() string { return "cannot publish: " + e.Reason }
 
 // AdminStore is the slice of the store the admin area needs.
 type AdminStore interface {
@@ -52,17 +76,25 @@ type AdminStore interface {
 	RetryMovie(ctx context.Context, id string) error
 	RetranscodeMovie(ctx context.Context, id string) error
 	DeleteMovie(ctx context.Context, id string) error
+	SetFeatured(ctx context.Context, id string, featured bool) error
+	UpdateMovieMetadata(ctx context.Context, id string, md model.MovieMetadata) (model.AdminMovie, error)
+	GetAdminMovie(ctx context.Context, id string) (model.AdminMovie, error)
+	PublishMovie(ctx context.Context, id string) error
+	UnpublishMovie(ctx context.Context, id string) error
 }
 
 // Admin serves the /api/v1/admin endpoints.
 type Admin struct {
-	store AdminStore
-	log   *slog.Logger
+	store   AdminStore
+	posters poster.Store
+	proc    *poster.Processor
+	log     *slog.Logger
 }
 
-// NewAdmin returns the admin service over st.
-func NewAdmin(st AdminStore, log *slog.Logger) *Admin {
-	return &Admin{store: st, log: log}
+// NewAdmin returns the admin service over st, keeping uploaded posters in
+// posters (processed one at a time per process).
+func NewAdmin(st AdminStore, posters poster.Store, log *slog.Logger) *Admin {
+	return &Admin{store: st, posters: posters, proc: poster.NewProcessor(), log: log}
 }
 
 // Page is a page request: Limit 1..MaxLimit, Offset >= 0.
@@ -118,6 +150,12 @@ func (a *Admin) requireAdmin(ctx context.Context, p Principal) error {
 		return ErrUnauthenticated
 	}
 	return nil
+}
+
+// RequireAdmin is the admin check alone, for a handler that must refuse a
+// non-admin before reading a large body (a poster upload).
+func (a *Admin) RequireAdmin(ctx context.Context, p Principal) error {
+	return a.requireAdmin(ctx, p)
 }
 
 // search checks a search text: "" is none, else at most MaxQueryLength
@@ -312,9 +350,187 @@ func (a *Admin) changeMovie(ctx context.Context, p Principal, movieID, action st
 		return ErrJobActive
 	case errors.Is(err, store.ErrMovieNotReady):
 		return ErrNotReadyForRetranscode
+	case errors.Is(err, store.ErrMovieNotPublished):
+		return ErrNotPublishedForFeature
+	case errors.Is(err, store.ErrMoviePublished), errors.Is(err, poster.ErrPublished):
+		return ErrMoviePublished
+	case errors.Is(err, poster.ErrNotFound):
+		return ErrNotFound
 	case err != nil:
+		var refused *store.PublishRefusedError
+		if errors.As(err, &refused) {
+			return &PublishRefusedError{Reason: string(refused.Reason)}
+		}
 		return err
 	}
 	a.log.InfoContext(ctx, "admin action", "admin_id", p.UserID, "action", action, "target_id", id)
 	return nil
+}
+
+// PublishMovie makes a movie visible to viewers: a *PublishRefusedError
+// unless it is ready, has a poster and a non-empty overview (the database
+// enforces the same rule).
+func (a *Admin) PublishMovie(ctx context.Context, p Principal, movieID string) error {
+	return a.changeMovie(ctx, p, movieID, "publish_movie", a.store.PublishMovie)
+}
+
+// UnpublishMovie hides a movie from viewers, any status, and takes it out
+// of the spotlight.
+func (a *Admin) UnpublishMovie(ctx context.Context, p Principal, movieID string) error {
+	return a.changeMovie(ctx, p, movieID, "unpublish_movie", a.store.UnpublishMovie)
+}
+
+// UploadPoster replaces a movie's poster (any status) with the image in
+// data, at most poster.MaxUploadBytes; the poster package's errors
+// (ErrUnsupported, ErrTooSmall, ...) for an image it refuses. The admin and
+// the movie are checked before a pixel is decoded.
+func (a *Admin) UploadPoster(ctx context.Context, p Principal, movieID string, data []byte) (model.AdminMovie, error) {
+	var out model.AdminMovie
+	err := a.changeMovie(ctx, p, movieID, "upload_poster", func(ctx context.Context, id string) error {
+		if _, err := a.store.GetAdminMovie(ctx, id); err != nil {
+			return err
+		}
+		ps, err := a.proc.Process(ctx, data)
+		if err != nil {
+			return err
+		}
+		if err := a.posters.Put(ctx, id, ps); err != nil {
+			return err
+		}
+		out, err = a.store.GetAdminMovie(ctx, id)
+		return err
+	})
+	return out, err
+}
+
+// DeletePoster removes a movie's poster: ErrMoviePublished while it is
+// published (a published movie must have one).
+func (a *Admin) DeletePoster(ctx context.Context, p Principal, movieID string) error {
+	return a.changeMovie(ctx, p, movieID, "delete_poster", a.posters.Delete)
+}
+
+// SetFeatured features a published movie on the home page
+// (ErrNotReadyForFeature for one that is not ready, ErrNotPublishedForFeature
+// for a ready one that is not published; featuring it again moves it to the
+// front) or unfeatures it.
+func (a *Admin) SetFeatured(ctx context.Context, p Principal, movieID string, featured bool) error {
+	action := "unfeature_movie"
+	if featured {
+		action = "feature_movie"
+	}
+	err := a.changeMovie(ctx, p, movieID, action, func(ctx context.Context, id string) error {
+		return a.store.SetFeatured(ctx, id, featured)
+	})
+	if errors.Is(err, ErrNotReadyForRetranscode) { // the store's ErrMovieNotReady
+		return ErrNotReadyForFeature
+	}
+	return err
+}
+
+// Metadata limits.
+const (
+	MaxTitleLength    = 200
+	MaxOverviewLength = 2000
+)
+
+// Optional is a field of a partial update: Set false leaves it as it is;
+// Set with a nil Value clears it.
+type Optional[T any] struct {
+	Set   bool
+	Value *T
+}
+
+// MovieEdit is an admin's edit of a movie's metadata; at least one field is
+// set. Title cannot be cleared.
+type MovieEdit struct {
+	Title    Optional[string]
+	Year     Optional[int64]
+	Overview Optional[string]
+}
+
+// EditMovie changes a movie's title, year or overview, any status. Title:
+// 1..MaxTitleLength characters after trimming, no control characters; year:
+// MinYear..MaxYear or null; overview: at most MaxOverviewLength characters,
+// "" or null clears it, except on a published movie (ErrMoviePublished).
+func (a *Admin) EditMovie(ctx context.Context, p Principal, movieID string, e MovieEdit) (model.AdminMovie, error) {
+	md, err := e.metadata()
+	if err != nil {
+		if aerr := a.requireAdmin(ctx, p); aerr != nil {
+			return model.AdminMovie{}, aerr // a non-admin learns nothing about the rules
+		}
+		return model.AdminMovie{}, err
+	}
+	var out model.AdminMovie
+	err = a.changeMovie(ctx, p, movieID, "edit_movie", func(ctx context.Context, id string) error {
+		var err error
+		out, err = a.store.UpdateMovieMetadata(ctx, id, md)
+		return err
+	})
+	return out, err
+}
+
+func (e MovieEdit) metadata() (model.MovieMetadata, error) {
+	var md model.MovieMetadata
+	if !e.Title.Set && !e.Year.Set && !e.Overview.Set {
+		return md, &ValidationError{"body", "set at least one of title, year, overview"}
+	}
+	if e.Title.Set {
+		if e.Title.Value == nil {
+			return md, &ValidationError{"title", "must not be null"}
+		}
+		t := strings.TrimSpace(*e.Title.Value)
+		n := utf8.RuneCountInString(t)
+		switch {
+		case !cleanText(t, false):
+			return md, &ValidationError{"title", "must be valid UTF-8 text without control characters"}
+		case n < 1 || n > MaxTitleLength:
+			return md, &ValidationError{"title", fmt.Sprintf("must be 1 to %d characters", MaxTitleLength)}
+		}
+		md.Title = &t
+	}
+	if e.Year.Set {
+		if e.Year.Value == nil {
+			md.ClearYear = true
+		} else {
+			y, err := yearBound("year", e.Year.Value)
+			if err != nil {
+				return md, err
+			}
+			md.Year = y
+		}
+	}
+	if e.Overview.Set {
+		o := ""
+		if e.Overview.Value != nil {
+			o = strings.TrimSpace(*e.Overview.Value)
+		}
+		switch {
+		case !cleanText(o, true):
+			return md, &ValidationError{"overview", "must be valid UTF-8 text without control characters"}
+		case utf8.RuneCountInString(o) > MaxOverviewLength:
+			return md, &ValidationError{"overview", fmt.Sprintf("must be at most %d characters", MaxOverviewLength)}
+		case o == "":
+			md.ClearOverview = true
+		default:
+			md.Overview = &o
+		}
+	}
+	return md, nil
+}
+
+// cleanText: valid UTF-8 with no control characters (Postgres refuses NUL);
+// line breaks and tabs are allowed when multiline.
+func cleanText(s string, multiline bool) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if multiline && (r == '\n' || r == '\r' || r == '\t') {
+			continue
+		}
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }

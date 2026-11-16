@@ -10,7 +10,9 @@
 //
 // Before scanning, it removes the movies an admin deleted (status
 // deleting): library/{id}/, the source file, then the row; and, for movies
-// whose library_cleanup_after has passed, every version but the current one.
+// whose library_cleanup_after has passed, every version but the current one;
+// and it gives movies published before subtitle_tracks existed their
+// subtitle rows (read back from the version's subs/ folder).
 //
 // Overlapping runs are safe: the rename is the lock, so each file is
 // claimed exactly once, and removing a deleted movie twice is harmless.
@@ -65,7 +67,7 @@ func realMain() int {
 	s := &scanner{root: root, q: st, log: logger, now: time.Now, newID: model.NewID}
 	start := time.Now()
 	r, err := s.run(ctx)
-	attrs := []any{"deleted", r.Deleted, "cleaned", r.Cleaned, "claimed", r.Claimed, "skipped", r.Skipped, "released", r.Released, "failed", r.Failed,
+	attrs := []any{"deleted", r.Deleted, "cleaned", r.Cleaned, "subtitled", r.Subtitled, "claimed", r.Claimed, "skipped", r.Skipped, "released", r.Released, "failed", r.Failed,
 		"pruned_refresh_tokens", r.Pruned.RefreshTokens, "pruned_email_tokens", r.Pruned.EmailTokens,
 		"pruned_oauth_states", r.Pruned.OAuthStates,
 		"duration", time.Since(start).Round(time.Millisecond).String()}

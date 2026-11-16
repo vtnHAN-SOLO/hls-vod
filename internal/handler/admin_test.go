@@ -15,6 +15,7 @@ import (
 
 	"github.com/vtnHAN-SOLO/hls-vod/internal/auth"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/model"
+	"github.com/vtnHAN-SOLO/hls-vod/internal/poster"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/service"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/store"
 )
@@ -48,8 +49,12 @@ func newFakeAdminStore(t *testing.T) *fakeAdminStore {
 		movies: map[string]*model.AdminMovie{},
 	}
 	running, ingestPurpose := model.JobRunning, model.PurposeIngest
+	overview := "A movie viewers can see."
 	for _, m := range []model.AdminMovie{
-		{Movie: model.Movie{ID: readyID, Title: "Ready", Status: model.StatusReady, CreatedAt: created, UpdatedAt: created}},
+		{Movie: model.Movie{ID: readyID, Title: "Ready", Status: model.StatusReady, Overview: &overview, PublishedAt: &created,
+			PosterHash: readyPosterHash[:], PosterWidths: []int{300, 600, 1000}, CreatedAt: created, UpdatedAt: created}},
+		// Ready, not published, no poster, no overview.
+		{Movie: model.Movie{ID: unpublishedID, Title: "Draft", Status: model.StatusReady, CreatedAt: created, UpdatedAt: created}},
 		{Movie: model.Movie{ID: failedID, Title: "Broken", Status: model.StatusFailed, CreatedAt: created, UpdatedAt: created}},
 		{Movie: model.Movie{ID: busyID, Title: "Busy", Status: model.StatusProcessing, CreatedAt: created, UpdatedAt: created}, ActiveJob: &running, ActiveJobPurpose: &ingestPurpose},
 	} {
@@ -153,7 +158,7 @@ func (s *fakeAdminStore) AdminMovies(_ context.Context, f store.MovieFilter) ([]
 		return nil, 0, s.err
 	}
 	var out []model.AdminMovie
-	for _, id := range []string{busyID, failedID, readyID} {
+	for _, id := range []string{busyID, failedID, readyID, unpublishedID} {
 		m, ok := s.movies[id]
 		if ok && (f.Status == nil || m.Status == *f.Status) && (f.Title == nil || strings.Contains(m.Title, *f.Title)) {
 			out = append(out, *m)
@@ -219,6 +224,145 @@ func (s *fakeAdminStore) DeleteMovie(_ context.Context, id string) error {
 	return nil
 }
 
+func (s *fakeAdminStore) SetFeatured(_ context.Context, id string, featured bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	m, ok := s.movies[id]
+	switch {
+	case !ok:
+		return store.ErrNotFound
+	case featured && m.Status != model.StatusReady:
+		return store.ErrMovieNotReady
+	case featured && m.PublishedAt == nil:
+		return store.ErrMovieNotPublished
+	}
+	m.FeaturedAt = nil
+	if featured {
+		now := time.Now()
+		m.FeaturedAt = &now
+	}
+	return nil
+}
+
+func (s *fakeAdminStore) UpdateMovieMetadata(_ context.Context, id string, md model.MovieMetadata) (model.AdminMovie, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return model.AdminMovie{}, s.err
+	}
+	m, ok := s.movies[id]
+	if !ok {
+		return model.AdminMovie{}, store.ErrNotFound
+	}
+	if md.Title != nil {
+		m.Title = *md.Title
+	}
+	if md.ClearYear {
+		m.Year = nil
+	} else if md.Year != nil {
+		m.Year = md.Year
+	}
+	if md.ClearOverview && m.PublishedAt != nil {
+		return model.AdminMovie{}, store.ErrMoviePublished
+	}
+	if md.ClearOverview {
+		m.Overview = nil
+	} else if md.Overview != nil {
+		m.Overview = md.Overview
+	}
+	return *m, nil
+}
+
+func (s *fakeAdminStore) GetAdminMovie(_ context.Context, id string) (model.AdminMovie, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return model.AdminMovie{}, s.err
+	}
+	m, ok := s.movies[id]
+	if !ok {
+		return model.AdminMovie{}, store.ErrNotFound
+	}
+	return *m, nil
+}
+
+// PublishMovie checks the rule the movies_published_check constraint
+// enforces in Postgres, in the store's order.
+func (s *fakeAdminStore) PublishMovie(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	m, ok := s.movies[id]
+	switch {
+	case !ok:
+		return store.ErrNotFound
+	case m.Status != model.StatusReady:
+		return &store.PublishRefusedError{Reason: store.RefusedNotReady}
+	case m.PosterHash == nil:
+		return &store.PublishRefusedError{Reason: store.RefusedMissingPoster}
+	case m.Overview == nil || strings.TrimSpace(*m.Overview) == "":
+		return &store.PublishRefusedError{Reason: store.RefusedMissingOverview}
+	}
+	if m.PublishedAt == nil {
+		now := time.Now()
+		m.PublishedAt = &now
+	}
+	return nil
+}
+
+func (s *fakeAdminStore) UnpublishMovie(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	m, ok := s.movies[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	m.PublishedAt, m.FeaturedAt = nil, nil
+	return nil
+}
+
+// fakeAdminStore is the poster.Store too, so an upload shows in the movie.
+func (s *fakeAdminStore) Put(_ context.Context, id string, ps poster.Poster) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.movies[id]
+	if !ok {
+		return poster.ErrNotFound
+	}
+	m.PosterHash = ps.Hash[:]
+	m.PosterWidths = nil
+	for _, v := range ps.Variants {
+		m.PosterWidths = append(m.PosterWidths, v.Width)
+	}
+	return nil
+}
+
+func (s *fakeAdminStore) Get(context.Context, string, int, []byte) ([]byte, error) {
+	return nil, poster.ErrNotFound
+}
+
+func (s *fakeAdminStore) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.movies[id]
+	switch {
+	case !ok:
+		return poster.ErrNotFound
+	case m.PublishedAt != nil:
+		return poster.ErrPublished
+	}
+	m.PosterHash, m.PosterWidths = nil, nil
+	return nil
+}
+
 func newAdminServer(t *testing.T, st *fakeAdminStore) *httptest.Server {
 	t.Helper()
 	f := fixtures(t)
@@ -227,8 +371,8 @@ func newAdminServer(t *testing.T, st *fakeAdminStore) *httptest.Server {
 	a := service.NewAuth(as, f.hasher, f.signer, auth.NewThrottle(), auth.NewThrottle(), logger)
 	signup := service.NewRegistration(newFakeRegStore(as), f.hasher, &fakeCaptcha{}, &fakeMailer{}, a,
 		service.RegistrationConfig{Open: true, BaseURL: testBaseURL, TurnstileSiteKey: testSiteKey}, logger)
-	srv := httptest.NewServer(NewRouter(logger, prometheus.NewRegistry(), &fakePinger{}, service.NewCatalog(&fakeStore{}, f.media),
-		a, signup, Options{SecureCookies: true, Admin: service.NewAdmin(st, logger)}))
+	srv := httptest.NewServer(NewRouter(logger, prometheus.NewRegistry(), &fakePinger{}, service.NewCatalog(&fakeStore{}, st, f.media),
+		a, signup, Options{SecureCookies: true, Admin: service.NewAdmin(st, st, logger)}))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -244,6 +388,9 @@ var adminEndpoints = []struct{ method, path, body string }{
 	{http.MethodPost, "/api/v1/admin/movies/" + failedID + "/retry", ""},
 	{http.MethodPost, "/api/v1/admin/movies/" + readyID + "/retranscode", ""},
 	{http.MethodDelete, "/api/v1/admin/movies/" + readyID, ""},
+	{http.MethodPatch, "/api/v1/admin/movies/" + readyID, `{"title":"Renamed"}`},
+	{http.MethodPost, "/api/v1/admin/movies/" + readyID + "/feature", ""},
+	{http.MethodDelete, "/api/v1/admin/movies/" + readyID + "/feature", ""},
 }
 
 // Every admin endpoint asks the database, not the token: a user, a demoted
@@ -280,7 +427,8 @@ func TestAdminEndpointsRefuseNonAdmins(t *testing.T) {
 				}
 				if st.users[viewerID].DisabledAt != nil || st.users[viewerID].Role != model.RoleUser ||
 					st.movies[failedID].Status != model.StatusFailed || st.movies[readyID].Status != model.StatusReady ||
-					st.movies[readyID].ActiveJob != nil {
+					st.movies[readyID].ActiveJob != nil || st.movies[readyID].Title != "Ready" ||
+					st.movies[readyID].FeaturedAt != nil {
 					t.Fatal("a refused request changed something")
 				}
 			})
@@ -425,7 +573,7 @@ func TestAdminJobsAndMovies(t *testing.T) {
 
 	var movies adminMovieListJSON
 	decode(t, as(http.MethodGet, "/api/v1/admin/movies").body, &movies)
-	if movies.Total != 3 || movies.Items[0].ActiveJob == nil || *movies.Items[0].ActiveJob != "running" || movies.Items[1].ActiveJob != nil {
+	if movies.Total != 4 || movies.Items[0].ActiveJob == nil || *movies.Items[0].ActiveJob != "running" || movies.Items[1].ActiveJob != nil {
 		t.Fatalf("movies = %+v", movies)
 	}
 	for _, q := range []string{"?status=gone", "?offset=-1", "?q=a&q=b"} {

@@ -5,7 +5,7 @@ export function GoogleButton() {
   return (
     <a
       href={GOOGLE_START_URL}
-      className="flex items-center justify-center gap-2 rounded-md border border-white/15 px-3 py-2 text-sm font-medium hover:bg-white/5"
+      className="flex items-center justify-center gap-2 rounded-md border border-line px-3 py-2 text-sm font-medium hover:bg-overlay"
     >
       <span aria-hidden="true" className="font-bold">
         G

@@ -21,6 +21,51 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/movies/popular": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Ready movies ranked by how many people watched them
+         * @description Ready movies ranked by the number of distinct users whose watch
+         *     progress in them was saved within the window, most first; ties by
+         *     id. A movie nobody watched in the window is not ranked, so the list
+         *     may be shorter than `limit`, or empty.
+         */
+        get: operations["listPopularMovies"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/movies/featured": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The movies the home page's spotlight rotates
+         * @description The published movies an admin featured, newest featured first (at
+         *     most 10). With none featured, the 5 newest published movies, and
+         *     `featured` is false.
+         */
+        get: operations["listFeaturedMovies"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/movies/{id}": {
         parameters: {
             query?: never;
@@ -30,7 +75,7 @@ export interface paths {
         };
         /**
          * A movie with its renditions
-         * @description For a non-admin, a movie that is not ready does not exist (404).
+         * @description For a non-admin, a movie that is not published does not exist (404).
          */
         get: operations["getMovie"];
         put?: never;
@@ -750,6 +795,127 @@ export interface paths {
         delete: operations["adminDeleteMovie"];
         options?: never;
         head?: never;
+        /**
+         * Admin: edit a movie's title, year or overview
+         * @description A partial update: a field left out stays as it is; at least one
+         *     must be sent. `title`: 1 to 200 characters after trimming, no
+         *     control characters, never null. `year`: 1880 to 2100, or null to
+         *     clear it. `overview`: at most 2000 characters after trimming; null
+         *     or "" clears it, except on a published movie (409
+         *     `movie_published`: unpublish it first). Works in any status.
+         */
+        patch: operations["adminEditMovie"];
+        trace?: never;
+    };
+    "/api/v1/admin/movies/{id}/feature": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Admin: feature a published movie in the home page's spotlight
+         * @description Only for a published movie: 409 `not_ready` when it is not ready,
+         *     `not_published` when it is ready but not published. Featuring a
+         *     movie again moves it to the front. Unpublishing it takes it out of
+         *     the spotlight.
+         */
+        post: operations["adminFeatureMovie"];
+        /**
+         * Admin: take a movie out of the spotlight
+         * @description Any status; a movie that is not featured stays so (204).
+         */
+        delete: operations["adminUnfeatureMovie"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/movies/{id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Admin: make a movie visible to viewers
+         * @description Needs a ready movie with a poster and a non-empty overview, checked
+         *     in that order; else 409 with the reason as the code. Publishing a
+         *     published movie keeps its publish time (204).
+         */
+        post: operations["adminPublishMovie"];
+        /**
+         * Admin: hide a movie from viewers
+         * @description Any status. Also takes it out of the spotlight (featuring needs a
+         *     published movie). Unpublishing an unpublished movie is a 204 again.
+         */
+        delete: operations["adminUnpublishMovie"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/movies/{id}/poster": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Admin: upload a movie's portrait poster
+         * @description The body is the image itself, at most 10 MB, any status. Its type
+         *     is read from the bytes (JPEG, PNG or WebP), never from a header or
+         *     a file name. At most 25 megapixels, read from the header before
+         *     anything is decoded; at least 300×450. The image is cropped to 2:3
+         *     from the centre and resized to widths 300, 600 and 1000 (widths
+         *     above the crop are skipped: never upscaled), each a JPEG at
+         *     quality 85. Re-encoding drops all metadata; EXIF orientation is not
+         *     applied. Replaces the previous poster, so its URLs change.
+         */
+        put: operations["adminUploadPoster"];
+        post?: never;
+        /**
+         * Admin: remove a movie's poster
+         * @description Refused while the movie is published (409 `movie_published`): a
+         *     published movie must have a poster. No poster is a 204 too.
+         */
+        delete: operations["adminDeletePoster"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/posters/{id}/{width}/{file}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One poster variant, by a signed URL
+         * @description The URL comes from a movie's `poster.variants[].url`; it needs no
+         *     access token (an image tag cannot send one): the signature is the
+         *     permission. `sig` = base64url(HMAC-SHA256(k, "{id}/{width}/{hash}/{exp}")),
+         *     unpadded, where k is derived from the media signing key for this
+         *     purpose only. `{file}` is `{hash}.jpg`, the poster's SHA-256: a new
+         *     upload changes it, so the image never changes under a URL and is
+         *     cached as immutable until `exp`.
+         */
+        get: operations["getPoster"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
         patch?: never;
         trace?: never;
     };
@@ -837,7 +1003,20 @@ export interface components {
             id: string;
             title: string;
             year: number | null;
+            overview: string | null;
             status: components["schemas"]["MovieStatus"];
+            /**
+             * Format: date-time
+             * @description When an admin featured it in the spotlight; null when not featured.
+             */
+            featured_at: string | null;
+            /**
+             * Format: date-time
+             * @description When an admin published it (visible to viewers); null while unpublished.
+             */
+            published_at: string | null;
+            poster: components["schemas"]["Poster"];
+            backdrop_url: components["schemas"]["Movie"]["backdrop_url"];
             /**
              * @description The status of the movie's queued or running job; null when it has none.
              * @enum {string|null}
@@ -877,16 +1056,35 @@ export interface components {
             overview: string | null;
             runtime_sec: number | null;
             status: components["schemas"]["MovieStatus"];
+            /** @description Height of the tallest rendition (the top quality); null with none. */
+            top_height: number | null;
             /**
-             * @description Signed path on media-delivery, valid for at least 24 hours:
+             * @description The landscape video frame the transcoder wrote. Signed path on
+             *     media-delivery, valid for at least 24 hours:
              *     /media/{token}/{expires}/{id}/{version}/poster.jpg (movies
              *     published before versions: without the {version}/ folder).
              */
-            poster_url: string | null;
+            backdrop_url: string | null;
+            poster: components["schemas"]["Poster"];
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        /** @description The uploaded portrait 2:3 poster; null when the movie has none. */
+        Poster: {
+            /** @description SHA-256 of the largest variant; a new upload changes it. */
+            hash: string;
+            /** @description Smallest first; no width above the cropped upload. */
+            variants: components["schemas"]["PosterVariant"][];
+        } | null;
+        PosterVariant: {
+            /** @enum {integer} */
+            width: 300 | 600 | 1000;
+            /** @enum {integer} */
+            height: 450 | 900 | 1500;
+            /** @description Signed, valid for at least 24 hours. */
+            url: string;
         };
         MovieList: {
             items: components["schemas"]["Movie"][];
@@ -912,13 +1110,56 @@ export interface components {
             overview: string | null;
             runtime_sec: number | null;
             status: components["schemas"]["MovieStatus"];
-            poster_url: components["schemas"]["Movie"]["poster_url"];
+            top_height: components["schemas"]["Movie"]["top_height"];
+            backdrop_url: components["schemas"]["Movie"]["backdrop_url"];
+            poster: components["schemas"]["Poster"];
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
             updated_at: string;
             /** @description HLS rungs, tallest first. */
             renditions: components["schemas"]["Rendition"][];
+            /**
+             * @description The languages of the movie's subtitles (BCP 47, as in
+             *     SubtitleTrack.language), in stream order, each once; empty when
+             *     it has none.
+             */
+            subtitle_languages: string[];
+        };
+        PopularList: {
+            /** @enum {string} */
+            window: "week" | "month" | "all";
+            items: components["schemas"]["PopularItem"][];
+        };
+        /** @description A Movie plus `viewers`, spelled out as MovieDetail is. */
+        PopularItem: {
+            /** Format: uuid */
+            id: string;
+            title: string;
+            year: number | null;
+            tmdb_id: number | null;
+            overview: string | null;
+            runtime_sec: number | null;
+            status: components["schemas"]["MovieStatus"];
+            top_height: components["schemas"]["Movie"]["top_height"];
+            backdrop_url: components["schemas"]["Movie"]["backdrop_url"];
+            poster: components["schemas"]["Poster"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** @description Distinct users who saved progress in it within the window. */
+            viewers: number;
+        };
+        FeaturedList: {
+            /** @description false when no movie is featured and the items are the newest ready movies instead. */
+            featured: boolean;
+            items: components["schemas"]["Movie"][];
+        };
+        MovieEditRequest: {
+            title?: string;
+            year?: number | null;
+            overview?: string | null;
         };
         Rendition: {
             height: number;
@@ -948,6 +1189,29 @@ export interface components {
              *     is nothing to resume (no progress, or watched to 95% or more).
              */
             resume_sec: number | null;
+            /**
+             * @description The subtitle tracks of the version the playlist points at, in the
+             *     source's stream order; empty when it has none.
+             */
+            subtitles: components["schemas"]["SubtitleTrack"][];
+        };
+        SubtitleTrack: {
+            /**
+             * @description Signed WebVTT file on media-delivery, the same token and lifetime
+             *     as playlist_url (one token covers the movie's folder):
+             *     /media/{token}/{expires}/{movie_id}/{version}/subs/{n}_{lang}.vtt.
+             *     Same origin as the page, so a <track> element may load it.
+             */
+            url: string;
+            /**
+             * @description BCP 47 tag from the source's ISO 639 tag: the 2-letter code where
+             *     one exists ("eng" → "en"), else the 3-letter code; "und" when
+             *     unknown. For <track srclang> and for display names
+             *     (Intl.DisplayNames).
+             */
+            language: string;
+            /** @description The stream's own title ("SDH", "Commentary"); null when it had none. */
+            label: string | null;
         };
         ProgressRequest: {
             /** Format: uuid */
@@ -1102,7 +1366,7 @@ export interface components {
         Error: {
             error: {
                 /** @enum {string} */
-                code: "invalid_request" | "not_found" | "not_ready" | "method_not_allowed" | "internal" | "unauthorized" | "invalid_credentials" | "forbidden" | "rate_limited" | "unsupported_media_type" | "captcha_required" | "captcha_failed" | "captcha_unavailable" | "email_not_verified" | "registration_closed" | "username_taken" | "invalid_token" | "last_login_method" | "account_disabled" | "self_change" | "last_admin" | "not_failed" | "job_active";
+                code: "invalid_request" | "not_found" | "not_ready" | "method_not_allowed" | "internal" | "unauthorized" | "invalid_credentials" | "forbidden" | "rate_limited" | "unsupported_media_type" | "captcha_required" | "captcha_failed" | "captcha_unavailable" | "email_not_verified" | "registration_closed" | "username_taken" | "invalid_token" | "last_login_method" | "account_disabled" | "self_change" | "last_admin" | "not_failed" | "job_active" | "not_published" | "movie_published" | "missing_poster" | "missing_overview" | "invalid_image" | "too_large" | "expired";
                 message: string;
             };
         };
@@ -1297,6 +1561,14 @@ export interface components {
             };
             content?: never;
         };
+        /** @description Done. No body. */
+        AdminDone: {
+            headers: {
+                "Cache-Control"?: "no-store";
+                [name: string]: unknown;
+            };
+            content?: never;
+        };
         /** @description Unexpected failure. Details are logged, never returned. */
         Internal: {
             headers: {
@@ -1384,6 +1656,58 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             405: components["responses"]["MethodNotAllowed"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    listPopularMovies: {
+        parameters: {
+            query?: {
+                /** @description `week` (the last 7 days), `month` (the last 30 days) or `all` (ever). */
+                window?: "week" | "month" | "all";
+                /** @description Values above 20 are rejected, not clamped. */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The ranking, first place first. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PopularList"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthorized"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    listFeaturedMovies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The spotlight's movies. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FeaturedList"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
             500: components["responses"]["Internal"];
         };
     };
@@ -2418,6 +2742,309 @@ export interface operations {
             403: components["responses"]["NotAdmin"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["MovieConflict"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    adminEditMovie: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Lowercase or uppercase UUID; anything else is a 400. */
+                id: components["parameters"]["MovieID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MovieEditRequest"];
+            };
+        };
+        responses: {
+            /** @description The movie after the edit. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminMovie"];
+                };
+            };
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["NotAdmin"];
+            404: components["responses"]["NotFound"];
+            /** @description `movie_published`: the overview of a published movie cannot be cleared. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            415: components["responses"]["UnsupportedMediaType"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    adminFeatureMovie: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Lowercase or uppercase UUID; anything else is a 400. */
+                id: components["parameters"]["MovieID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["AdminDone"];
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["NotAdmin"];
+            404: components["responses"]["NotFound"];
+            /** @description `not_ready`: only a ready movie can be featured. `not_published`: publish it first. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["Internal"];
+        };
+    };
+    adminUnfeatureMovie: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Lowercase or uppercase UUID; anything else is a 400. */
+                id: components["parameters"]["MovieID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["AdminDone"];
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["NotAdmin"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    adminPublishMovie: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Lowercase or uppercase UUID; anything else is a 400. */
+                id: components["parameters"]["MovieID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["AdminDone"];
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["NotAdmin"];
+            404: components["responses"]["NotFound"];
+            /**
+             * @description Why it cannot be published: `not_ready`, `missing_poster` or
+             *     `missing_overview`.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["Internal"];
+        };
+    };
+    adminUnpublishMovie: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Lowercase or uppercase UUID; anything else is a 400. */
+                id: components["parameters"]["MovieID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["AdminDone"];
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["NotAdmin"];
+            404: components["responses"]["NotFound"];
+            500: components["responses"]["Internal"];
+        };
+    };
+    adminUploadPoster: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Lowercase or uppercase UUID; anything else is a 400. */
+                id: components["parameters"]["MovieID"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "image/jpeg": string;
+                "image/png": string;
+                "image/webp": string;
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description The movie with its new poster. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminMovie"];
+                };
+            };
+            /**
+             * @description `invalid_image`: not a JPEG, PNG or WebP, over 25 megapixels,
+             *     under 300×450, or undecodable. `invalid_request`: a bad id.
+             */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["NotAdmin"];
+            404: components["responses"]["NotFound"];
+            /** @description `too_large`: the body is over 10 MB. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["Internal"];
+        };
+    };
+    adminDeletePoster: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Lowercase or uppercase UUID; anything else is a 400. */
+                id: components["parameters"]["MovieID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: components["responses"]["AdminDone"];
+            400: components["responses"]["InvalidRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["NotAdmin"];
+            404: components["responses"]["NotFound"];
+            /** @description `movie_published`: unpublish the movie first. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            500: components["responses"]["Internal"];
+        };
+    };
+    getPoster: {
+        parameters: {
+            query: {
+                /** @description Unix seconds; the URL stops working then. */
+                exp: number;
+                sig: string;
+            };
+            header?: {
+                "If-None-Match"?: string;
+            };
+            path: {
+                /** @description Lowercase or uppercase UUID; anything else is a 400. */
+                id: components["parameters"]["MovieID"];
+                width: 300 | 600 | 1000;
+                file: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The JPEG. */
+            200: {
+                headers: {
+                    /** @description private, max-age up to exp, immutable. */
+                    "Cache-Control"?: string;
+                    /** @description The poster hash, quoted. */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": string;
+                };
+            };
+            /** @description If-None-Match matched the ETag. No body. */
+            304: {
+                headers: {
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description `forbidden`: a missing, malformed or wrong signature. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /**
+             * @description `not_found`: no such poster (any longer: a new upload changes
+             *     the hash), or a path no signed URL has.
+             */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `expired`: the URL was genuine but its time is up; fetch the movie again. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             500: components["responses"]["Internal"];
         };
     };

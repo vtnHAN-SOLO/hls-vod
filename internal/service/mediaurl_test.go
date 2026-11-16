@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -163,5 +164,68 @@ func TestURL(t *testing.T) {
 		if got := s.URL(testMovieID, tt.rel, PlaybackURLTTL); got != tt.want {
 			t.Errorf("URL(%q) = %q, want %q", tt.rel, got, tt.want)
 		}
+	}
+}
+
+func TestPosterURL(t *testing.T) {
+	now := time.Unix(1_700_000_123, 0)
+	s := newSigner(t, randomKey(t), now)
+	hash := strings.Repeat("ab", 32)
+	u := s.PosterURL(testMovieID, 600, hash)
+	prefix := "/api/v1/posters/" + testMovieID + "/600/" + hash + ".jpg?exp="
+	if !strings.HasPrefix(u, prefix) {
+		t.Fatalf("url = %s", u)
+	}
+	q := strings.TrimPrefix(u, prefix)
+	exp, sig, ok := strings.Cut(q, "&sig=")
+	if !ok {
+		t.Fatalf("no sig in %s", u)
+	}
+	e, _ := strconv.ParseInt(exp, 10, 64)
+	if d := time.Unix(e, 0).Sub(now); d < 24*time.Hour || d > 25*time.Hour {
+		t.Errorf("lifetime %v, want 24 h rounded up to the hour", d)
+	}
+	// Rounded: the same URL for a while, so the browser cache works.
+	s.now = func() time.Time { return now.Add(time.Minute) }
+	if again := s.PosterURL(testMovieID, 600, hash); again != u {
+		t.Errorf("a minute later the URL changed: %s", again)
+	}
+
+	tests := []struct {
+		name           string
+		id             string
+		width          int
+		hash, exp, sig string
+		at             time.Time
+		wantErr        error
+	}{
+		{"genuine", testMovieID, 600, hash, exp, sig, now, nil},
+		{"other width", testMovieID, 300, hash, exp, sig, now, ErrBadSignature},
+		{"other movie", "1b9d6b52-2d2c-4a7b-9e0e-6a4f39a0c1d2", 600, hash, exp, sig, now, ErrBadSignature},
+		{"other hash", testMovieID, 600, strings.Repeat("cd", 32), exp, sig, now, ErrBadSignature},
+		{"exp extended", testMovieID, 600, hash, strconv.FormatInt(e+3600, 10), sig, now, ErrBadSignature},
+		{"exp with a leading zero", testMovieID, 600, hash, "0" + exp, sig, now, ErrBadSignature},
+		{"exp not a number", testMovieID, 600, hash, "soon", sig, now, ErrBadSignature},
+		{"empty sig", testMovieID, 600, hash, exp, "", now, ErrBadSignature},
+		{"at the expiry", testMovieID, 600, hash, exp, sig, time.Unix(e, 0), ErrExpired},
+		{"after the expiry", testMovieID, 600, hash, exp, sig, time.Unix(e, 0).Add(time.Hour), ErrExpired},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s.now = func() time.Time { return tt.at }
+			if _, err := s.CheckPoster(tt.id, tt.width, tt.hash, tt.exp, tt.sig); !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+
+	// The key is derived for this purpose: another key never verifies, and
+	// the media token key alone is not the poster key.
+	other := newSigner(t, randomKey(t), now)
+	if _, err := other.CheckPoster(testMovieID, 600, hash, exp, sig); !errors.Is(err, ErrBadSignature) {
+		t.Errorf("another key verified: %v", err)
+	}
+	if bytes.Equal(s.posterKey, s.key) {
+		t.Error("the poster key is the media signing key itself")
 	}
 }

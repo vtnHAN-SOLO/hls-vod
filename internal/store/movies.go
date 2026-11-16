@@ -44,9 +44,12 @@ type MovieFilter struct {
 	Title    *string            // nil: any title; else a case-insensitive substring, matched literally
 	YearFrom *int               // nil: no lower bound; else year >= YearFrom (no year never matches)
 	YearTo   *int               // nil: no upper bound; else year <= YearTo
-	Sort     MovieSort          // "": SortAddedDesc
-	Limit    int64
-	Offset   int64
+	// PublishedOnly leaves out every movie viewers cannot see (published
+	// implies ready).
+	PublishedOnly bool
+	Sort          MovieSort // "": SortAddedDesc
+	Limit         int64
+	Offset        int64
 }
 
 // containsPattern turns user text into an ILIKE pattern that matches it as
@@ -62,10 +65,19 @@ func containsPattern(s string) string {
 const movieWhere = `WHERE ($1::text IS NULL OR status = $1)
 	  AND ($2::text IS NULL OR title ILIKE $2 ESCAPE '\')
 	  AND ($3::int IS NULL OR year >= $3)
-	  AND ($4::int IS NULL OR year <= $4)`
+	  AND ($4::int IS NULL OR year <= $4)
+	  AND (NOT $5::bool OR (published_at IS NOT NULL AND status = 'ready'))`
 
-const movieColumns = `id::text, title, year, tmdb_id, overview, runtime_sec,
-	source_path, library_path, poster_path, status, library_cleanup_after, created_at, updated_at`
+// movieColumns are qualified with the table name, so they also work in a
+// join (watch_progress has created_at and updated_at too). Scan them with
+// movieDest. top_height is the tallest rendition. The poster's widths come
+// from movie_posters' primary key; its bytes are never read here.
+const movieColumns = `movies.id::text, movies.title, movies.year, movies.tmdb_id, movies.overview,
+	movies.runtime_sec, movies.source_path, movies.library_path, movies.backdrop_path, movies.status,
+	movies.library_cleanup_after, movies.featured_at, movies.published_at, movies.poster_hash,
+	ARRAY(SELECT p.width FROM movie_posters p WHERE p.movie_id = movies.id ORDER BY p.width),
+	(SELECT max(r.height) FROM renditions r WHERE r.movie_id = movies.id),
+	movies.created_at, movies.updated_at`
 
 // ListMovies returns one page of movies in f.Sort order (newest first by
 // default) and the total number of movies matching the filter (for
@@ -94,8 +106,8 @@ func (s *Store) ListMovies(ctx context.Context, f MovieFilter) ([]model.Movie, i
 		FROM movies
 		`+movieWhere+`
 		ORDER BY `+order+`
-		LIMIT $5 OFFSET $6`,
-		status, title, f.YearFrom, f.YearTo, f.Limit, f.Offset)
+		LIMIT $6 OFFSET $7`,
+		status, title, f.YearFrom, f.YearTo, f.PublishedOnly, f.Limit, f.Offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("listing movies: %w", err)
 	}
@@ -108,7 +120,7 @@ func (s *Store) ListMovies(ctx context.Context, f MovieFilter) ([]model.Movie, i
 	// the offset is past the last row, and clients need it to stop paging.
 	var total int64
 	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM movies `+movieWhere, status, title, f.YearFrom, f.YearTo,
+		`SELECT count(*) FROM movies `+movieWhere, status, title, f.YearFrom, f.YearTo, f.PublishedOnly,
 	).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("counting movies: %w", err)
 	}
@@ -154,11 +166,18 @@ func (s *Store) ListRenditions(ctx context.Context, movieID string) ([]model.Ren
 	return rs, nil
 }
 
+// movieDest is the scan destinations of movieColumns, in order. status is
+// scanned as text; the caller sets m.Status from it.
+func movieDest(m *model.Movie, status *string) []any {
+	return []any{&m.ID, &m.Title, &m.Year, &m.TMDBID, &m.Overview, &m.RuntimeSec,
+		&m.SourcePath, &m.LibraryPath, &m.BackdropPath, status, &m.LibraryCleanupAfter, &m.FeaturedAt,
+		&m.PublishedAt, &m.PosterHash, &m.PosterWidths, &m.TopHeight, &m.CreatedAt, &m.UpdatedAt}
+}
+
 func scanMovie(row pgx.CollectableRow) (model.Movie, error) {
 	var m model.Movie
 	var status string
-	err := row.Scan(&m.ID, &m.Title, &m.Year, &m.TMDBID, &m.Overview, &m.RuntimeSec,
-		&m.SourcePath, &m.LibraryPath, &m.PosterPath, &status, &m.LibraryCleanupAfter, &m.CreatedAt, &m.UpdatedAt)
+	err := row.Scan(movieDest(&m, &status)...)
 	m.Status = model.MovieStatus(status)
 	return m, err
 }

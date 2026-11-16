@@ -188,7 +188,7 @@ func TestJobs(t *testing.T) {
 		if s := stateOf(t, m); s.movie != "processing" || s.job != "running" {
 			t.Fatalf("state = %+v", s)
 		}
-		pub := store.Published{LibraryPath: "library/" + m, PosterPath: "poster.jpg", RuntimeSec: 125,
+		pub := store.Published{LibraryPath: "library/" + m, BackdropPath: "poster.jpg", RuntimeSec: 125,
 			Renditions: []store.NewRendition{{Height: 720, BitrateKbps: 2800, PlaylistPath: "720p/index.m3u8", SizeBytes: 9}}}
 		if err := st.FinishTranscode(t.Context(), tj, pub); err != nil {
 			t.Fatal(err)
@@ -197,7 +197,7 @@ func TestJobs(t *testing.T) {
 			t.Fatalf("state = %+v", s)
 		}
 		got, err := st.GetMovie(t.Context(), m)
-		if err != nil || *got.LibraryPath != "library/"+m || *got.PosterPath != "poster.jpg" || *got.RuntimeSec != 125 {
+		if err != nil || *got.LibraryPath != "library/"+m || *got.BackdropPath != "poster.jpg" || *got.RuntimeSec != 125 {
 			t.Fatalf("movie = %+v, %v", got, err)
 		}
 		var finished bool
@@ -229,7 +229,7 @@ func TestJobs(t *testing.T) {
 		if ok, err := st.FailJob(t.Context(), j.ID, "deadline exceeded"); err != nil || !ok {
 			t.Fatal(err)
 		}
-		pub := store.Published{LibraryPath: "library/" + m, PosterPath: "poster.jpg",
+		pub := store.Published{LibraryPath: "library/" + m, BackdropPath: "poster.jpg",
 			Renditions: []store.NewRendition{{Height: 720, PlaylistPath: "720p/index.m3u8"}}}
 		if err := st.FinishTranscode(t.Context(), tj, pub); !errors.Is(err, store.ErrJobNotRunning) {
 			t.Fatalf("FinishTranscode = %v, want ErrJobNotRunning", err)

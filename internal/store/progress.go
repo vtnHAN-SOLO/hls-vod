@@ -50,21 +50,19 @@ func (s *Store) GetProgress(ctx context.Context, userID, movieID string) (positi
 	return positionSec, true, nil
 }
 
-// ContinueWatching returns userID's ready movies with saved progress, most
+// ContinueWatching returns userID's published ready movies with saved progress, most
 // recently saved first, at most limit. A movie watched to at least
 // finishedPercent of its runtime is left out; one with an unknown runtime
 // is kept.
 func (s *Store) ContinueWatching(ctx context.Context, userID string, finishedPercent, limit int) ([]model.Progress, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT m.id::text, m.title, m.year, m.tmdb_id, m.overview, m.runtime_sec,
-		       m.source_path, m.library_path, m.poster_path, m.status, m.library_cleanup_after, m.created_at, m.updated_at,
-		       p.position_sec, p.updated_at
+		SELECT `+movieColumns+`, p.position_sec, p.updated_at
 		FROM watch_progress p
-		JOIN movies m ON m.id = p.movie_id
+		JOIN movies ON movies.id = p.movie_id
 		WHERE p.user_id = $1
-		  AND m.status = 'ready'
-		  AND (m.runtime_sec IS NULL OR p.position_sec::bigint * 100 < m.runtime_sec::bigint * $2)
-		ORDER BY p.updated_at DESC, m.id DESC
+		  AND movies.status = 'ready' AND movies.published_at IS NOT NULL
+		  AND (movies.runtime_sec IS NULL OR p.position_sec::bigint * 100 < movies.runtime_sec::bigint * $2)
+		ORDER BY p.updated_at DESC, movies.id DESC
 		LIMIT $3`, userID, finishedPercent, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing continue-watching: %w", err)
@@ -73,9 +71,7 @@ func (s *Store) ContinueWatching(ctx context.Context, userID string, finishedPer
 		var p model.Progress
 		var status string
 		m := &p.Movie
-		err := row.Scan(&m.ID, &m.Title, &m.Year, &m.TMDBID, &m.Overview, &m.RuntimeSec,
-			&m.SourcePath, &m.LibraryPath, &m.PosterPath, &status, &m.LibraryCleanupAfter, &m.CreatedAt, &m.UpdatedAt,
-			&p.PositionSec, &p.UpdatedAt)
+		err := row.Scan(append(movieDest(m, &status), &p.PositionSec, &p.UpdatedAt)...)
 		m.Status = model.MovieStatus(status)
 		return p, err
 	})

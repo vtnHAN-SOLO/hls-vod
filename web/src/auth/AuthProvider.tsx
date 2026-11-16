@@ -67,7 +67,7 @@ export function RequireAuth() {
   const { state } = useAuth();
   const location = useLocation();
   if (state.status === "unknown") {
-    return <div className="mx-auto h-1 max-w-7xl animate-pulse bg-white/10" aria-label="Checking your session" />;
+    return <div className="mx-auto h-1 max-w-7xl animate-pulse bg-overlay" aria-label="Checking your session" />;
   }
   if (state.status === "anonymous") {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;

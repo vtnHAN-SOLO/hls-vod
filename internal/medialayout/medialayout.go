@@ -82,7 +82,7 @@ func Version(id, libraryPath string) (string, bool) {
 }
 
 // InVersion is name inside version, relative to library/{id}/ (what a
-// signed URL and poster_path carry): "{version}/{name}", or just name for
+// signed URL and backdrop_path carry): "{version}/{name}", or just name for
 // the old layout (version "").
 func InVersion(version, name string) string {
 	if version == "" {

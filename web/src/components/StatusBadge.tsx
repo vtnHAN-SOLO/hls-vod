@@ -2,11 +2,11 @@ import type { MovieStatus } from "../api/client";
 import { STATUS_LABELS } from "../lib/catalogParams";
 
 const STYLES: Record<MovieStatus, string> = {
-  ready: "bg-emerald-500/15 text-emerald-300",
-  processing: "bg-sky-500/15 text-sky-300",
-  pending: "bg-amber-500/15 text-amber-300",
-  failed: "bg-red-500/15 text-red-300",
-  deleting: "bg-neutral-500/20 text-neutral-400",
+  ready: "bg-success/15 text-success",
+  processing: "bg-accent/20 text-accent-soft",
+  pending: "bg-warning/15 text-warning",
+  failed: "bg-danger/15 text-danger",
+  deleting: "bg-overlay text-fg-muted",
 };
 
 export function StatusBadge({ status }: { status: MovieStatus }) {

@@ -1,7 +1,9 @@
 package service
 
 import (
+	"crypto/hmac"
 	"crypto/md5" // #nosec G501 -- nginx secure_link_md5 only speaks MD5; see MediaSigner
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"strconv"
@@ -38,7 +40,11 @@ const (
 // Not bound to the client IP: mobile networks and the reverse proxy change it.
 type MediaSigner struct {
 	key []byte
-	now func() time.Time
+	// posterKey signs poster URLs: HMAC-SHA256(key, posterKeyLabel), so
+	// the shared MEDIA_SIGNING_KEY never signs two kinds of message with
+	// the same key, and no new secret is needed.
+	posterKey []byte
+	now       func() time.Time
 	// ttl, when non-zero, replaces every lifetime (DEV_MEDIA_URL_TTL).
 	ttl time.Duration
 }
@@ -52,7 +58,72 @@ func NewMediaSigner(key string, devTTL time.Duration) (*MediaSigner, error) {
 	if devTTL < 0 {
 		return nil, errors.New("media URL TTL must not be negative")
 	}
-	return &MediaSigner{key: []byte(key), now: time.Now, ttl: devTTL}, nil
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write([]byte(posterKeyLabel))
+	return &MediaSigner{key: []byte(key), posterKey: mac.Sum(nil), now: time.Now, ttl: devTTL}, nil
+}
+
+// posterKeyLabel derives the poster URL key from MEDIA_SIGNING_KEY. Fixed:
+// changing it invalidates every poster URL in flight.
+const posterKeyLabel = "poster-url-signing-v1"
+
+// PosterPrefix is where the api serves poster variants.
+const PosterPrefix = "/api/v1/posters/"
+
+// Errors of CheckPoster: the handler answers 403 and 410.
+var (
+	ErrBadSignature = errors.New("bad signature")
+	ErrExpired      = errors.New("the URL has expired")
+)
+
+// posterSig is base64url(HMAC-SHA256(posterKey, "{movie_id}/{width}/{hash}/{exp}")),
+// unpadded.
+func (s *MediaSigner) posterSig(movieID string, width int, hash string, exp int64) string {
+	mac := hmac.New(sha256.New, s.posterKey)
+	msg := make([]byte, 0, 128)
+	msg = append(msg, movieID...)
+	msg = append(msg, '/')
+	msg = strconv.AppendInt(msg, int64(width), 10)
+	msg = append(msg, '/')
+	msg = append(msg, hash...)
+	msg = append(msg, '/')
+	msg = strconv.AppendInt(msg, exp, 10)
+	mac.Write(msg)
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// PosterURL is the signed URL of one poster variant, valid for
+// PosterURLTTL and rounded like every media URL, so it stays the same for a
+// while and the browser cache works:
+//
+//	/api/v1/posters/{movie_id}/{width}/{hash}.jpg?exp={unix}&sig={sig}
+//
+// hash is the poster's lowercase hex SHA-256: a new upload changes it, and
+// with it the URL. movieID must be a validated, canonical UUID.
+func (s *MediaSigner) PosterURL(movieID string, width int, hash string) string {
+	exp := s.Expires(PosterURLTTL)
+	return PosterPrefix + movieID + "/" + strconv.Itoa(width) + "/" + hash + ".jpg?exp=" +
+		strconv.FormatInt(exp, 10) + "&sig=" + s.posterSig(movieID, width, hash, exp)
+}
+
+// CheckPoster verifies a poster URL's exp and sig: ErrBadSignature when
+// either is missing, malformed or wrong (the signature is checked first, so
+// an expired URL only says so when it was genuine), ErrExpired after exp.
+// It returns when the URL expires.
+func (s *MediaSigner) CheckPoster(movieID string, width int, hash, exp, sig string) (time.Time, error) {
+	e, err := strconv.ParseInt(exp, 10, 64)
+	if err != nil || e <= 0 || strconv.FormatInt(e, 10) != exp {
+		return time.Time{}, ErrBadSignature
+	}
+	want := s.posterSig(movieID, width, hash, e)
+	if !hmac.Equal([]byte(sig), []byte(want)) {
+		return time.Time{}, ErrBadSignature
+	}
+	at := time.Unix(e, 0)
+	if !s.now().Before(at) {
+		return time.Time{}, ErrExpired
+	}
+	return at, nil
 }
 
 // Token is the secure_link token for one movie folder until expires (Unix

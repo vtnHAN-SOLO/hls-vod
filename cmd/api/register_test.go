@@ -156,6 +156,7 @@ func TestRegistrationEndToEnd(t *testing.T) {
 	if _, err := db.Pool.Exec(t.Context(), `UPDATE movies SET library_path = 'library/' || id::text WHERE id = $1`, movieID); err != nil {
 		t.Fatal(err)
 	}
+	db.Publish(t.Context(), t, movieID)
 	password := randomSecret(18)
 
 	if status, c := getJSON(t, base+"/api/v1/auth/config", ""); status != http.StatusOK || c["registration_open"] != true || c["turnstile_site_key"] != "site-key" {

@@ -1,12 +1,15 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { Link, useSearchParams } from "react-router";
+import { useSearchParams } from "react-router";
 
-import { listMovies, type Movie } from "../api/client";
+import { listMovies } from "../api/client";
 import { useUser } from "../auth/AuthProvider";
-import { ContinueWatching } from "../components/ContinueWatching";
-import { Poster } from "../components/Poster";
 import { StatusBadge } from "../components/StatusBadge";
+import { Button } from "../components/ui/Button";
+import { MovieCard, MovieCardSkeleton } from "../components/ui/Card";
+import { POSTER_SIZES } from "../lib/poster";
+import { FilmIcon, SearchIcon } from "../components/ui/Icons";
+import { EmptyState, Notice } from "../components/ui/Primitives";
 import {
   type CatalogDraft,
   type CatalogState,
@@ -27,9 +30,9 @@ import {
   writeCatalogParams,
 } from "../lib/catalogParams";
 import { describeError, isRetryable } from "../lib/errors";
-import { formatTime } from "../lib/format";
 import { once } from "../lib/mediaExpiry";
 
+/** Browse: the whole catalog, searched, sorted and filtered (all in the URL). */
 export function CatalogPage() {
   const [params, setParams] = useSearchParams();
   const isAdmin = useUser().role === "admin";
@@ -62,9 +65,12 @@ export function CatalogPage() {
   };
 
   return (
-    <main className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6">
-      <div className="flex flex-col gap-3">
-        <h1 className="text-2xl font-semibold">Movies</h1>
+    <main className="mx-auto flex max-w-[1600px] flex-col gap-8 px-4 py-8 sm:px-6">
+      <div className="flex flex-col gap-5">
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-3xl font-bold">Browse</h1>
+          {movies.data && <span className="text-sm text-fg-subtle">{describeCount(movies.data.total, state)}</span>}
+        </div>
         {/* Keyed by the URL: back/forward or a link replaces the draft with
             what the URL says, without syncing state in an effect. */}
         <SearchForm
@@ -76,16 +82,19 @@ export function CatalogPage() {
         />
       </div>
 
-      {/* Above the grid, on the unfiltered first page only. */}
-      {!hasFilters(state) && state.page === 1 && <ContinueWatching />}
-
       {movies.isPending ? (
         <GridSkeleton />
       ) : movies.isError ? (
-        <Panel>
-          <p className="text-neutral-300">{describeError(movies.error)}</p>
-          {isRetryable(movies.error) && <PanelButton onClick={() => void movies.refetch()}>Try again</PanelButton>}
-        </Panel>
+        <EmptyState
+          title="The movies could not be loaded"
+          action={
+            isRetryable(movies.error) ? (
+              <Button onClick={() => void movies.refetch()}>Try again</Button>
+            ) : undefined
+          }
+        >
+          {describeError(movies.error)}
+        </EmptyState>
       ) : movies.data.items.length === 0 ? (
         <Empty
           total={movies.data.total}
@@ -99,13 +108,20 @@ export function CatalogPage() {
         <>
           <ul
             aria-busy={movies.isFetching}
-            className={`grid grid-cols-2 gap-x-4 gap-y-6 transition-opacity sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 ${
+            className={`grid grid-cols-3 gap-x-3 gap-y-6 transition-opacity duration-200 sm:grid-cols-4 sm:gap-x-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 ${
               movies.isPlaceholderData ? "opacity-60" : ""
             }`}
           >
             {movies.data.items.map((m) => (
               <li key={m.id}>
-                <MovieCard movie={m} search={params.toString()} onPosterFailed={posterFailed} />
+                <MovieCard
+                  movie={m}
+                  // The detail page's back link returns to this exact list.
+                  linkState={{ catalogSearch: params.toString() }}
+                  corner={m.status !== "ready" ? <StatusBadge status={m.status} /> : undefined}
+                  onPosterFailed={posterFailed}
+                  sizes={POSTER_SIZES.browse}
+                />
               </li>
             ))}
           </ul>
@@ -123,8 +139,7 @@ export function CatalogPage() {
   );
 }
 
-const fieldClass =
-  "rounded-md border border-white/10 bg-neutral-900 px-3 py-2 text-sm outline-none placeholder:text-neutral-500 focus:border-white/40";
+const fieldClass = "field h-10";
 
 /**
  * The search box and every filter, as a draft: editing them fetches
@@ -161,8 +176,10 @@ function SearchForm({
       }}
       className="flex flex-col gap-2"
     >
-      <div className="flex flex-wrap items-center gap-3">
-        <input
+      <div className="flex flex-col gap-3 rounded-2xl border border-line bg-surface p-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="relative w-full sm:w-72">
+          <SearchIcon size={16} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-fg-subtle" />
+          <input
           type="search"
           aria-label="Search titles"
           placeholder="Search titles"
@@ -171,8 +188,9 @@ function SearchForm({
           onChange={(e) => {
             edit({ q: e.target.value });
           }}
-          className={`${fieldClass} w-full sm:w-72`}
-        />
+          className={`${fieldClass} w-full pl-9`}
+          />
+        </div>
         <select
           aria-label="Sort"
           value={draft.sort}
@@ -187,7 +205,7 @@ function SearchForm({
             </option>
           ))}
         </select>
-        <span className="flex items-center gap-2 text-sm text-neutral-400">
+        <span className="flex items-center gap-2 text-sm text-fg-subtle">
           <YearInput label="From year" value={draft.yearFrom} onChange={(v) => { edit({ yearFrom: v }); }} />
           <span aria-hidden="true">–</span>
           <YearInput label="To year" value={draft.yearTo} onChange={(v) => { edit({ yearTo: v }); }} />
@@ -209,22 +227,16 @@ function SearchForm({
             ))}
           </select>
         )}
-        <button type="submit" className="rounded-md bg-white px-4 py-2 text-sm font-medium text-neutral-950 hover:bg-white/90">
-          Search
-        </button>
-        <button
-          type="button"
-          onClick={onClear}
-          className="rounded-md bg-white/10 px-3 py-2 text-sm text-neutral-100 hover:bg-white/20"
-        >
-          Clear
-        </button>
+        <div className="flex gap-2 sm:ml-auto">
+          <Button type="submit" variant="primary" className="flex-1 sm:flex-none">
+            Search
+          </Button>
+          <Button variant="ghost" onClick={onClear}>
+            Clear
+          </Button>
+        </div>
       </div>
-      {error && (
-        <p role="alert" className="text-sm text-red-300">
-          {error}
-        </p>
-      )}
+      {error && <Notice tone="danger">{error}</Notice>}
     </form>
   );
 }
@@ -242,36 +254,8 @@ function YearInput({ label, value, onChange }: { label: string; value: string; o
       onChange={(e) => {
         onChange(e.target.value);
       }}
-      className={`${fieldClass} w-28`}
+      className={`${fieldClass} w-full sm:w-28`}
     />
-  );
-}
-
-function MovieCard({ movie, search, onPosterFailed }: { movie: Movie; search: string; onPosterFailed: () => void }) {
-  return (
-    <Link
-      to={`/movies/${movie.id}`}
-      // The detail page's back link returns to this exact list.
-      state={{ catalogSearch: search }}
-      className="group flex flex-col gap-2 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-white/70"
-    >
-      <div className="overflow-hidden rounded-md">
-        <Poster
-          key={movie.poster_url}
-          url={movie.poster_url}
-          title={movie.title}
-          className="transition-transform group-hover:scale-105"
-          onFailed={onPosterFailed}
-        />
-      </div>
-      <div className="flex flex-col gap-1">
-        <span className="line-clamp-2 text-sm font-medium group-hover:text-white/80">{movie.title}</span>
-        <span className="flex items-center gap-2 text-xs text-neutral-400">
-          {[movie.year, movie.runtime_sec ? formatTime(movie.runtime_sec) : null].filter((v) => v !== null).join(" · ")}
-          {movie.status !== "ready" && <StatusBadge status={movie.status} />}
-        </span>
-      </div>
-    </Link>
   );
 }
 
@@ -289,7 +273,7 @@ function Pager({
   const page = Math.floor(offset / PAGE_SIZE) + 1;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   return (
-    <nav aria-label="Pages" className="flex items-center justify-between text-sm text-neutral-400">
+    <nav aria-label="Pages" className="flex items-center justify-between text-sm text-fg-subtle">
       <span>
         {offset + 1}–{offset + count} of {total}
       </span>
@@ -322,14 +306,9 @@ function Pager({
 
 function PageButton({ disabled, onClick, children }: { disabled: boolean; onClick: () => void; children: string }) {
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className="rounded-md bg-white/10 px-3 py-1.5 text-neutral-100 hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40"
-    >
+    <Button size="sm" disabled={disabled} onClick={onClick}>
       {children}
-    </button>
+    </Button>
   );
 }
 
@@ -347,54 +326,41 @@ function Empty({
   // Past the last page (an old link, or movies were removed).
   if (total > 0) {
     return (
-      <Panel>
-        <p className="text-neutral-300">There are no movies on page {state.page}.</p>
-        <PanelButton onClick={onFirstPage}>Go to the first page</PanelButton>
-      </Panel>
+      <EmptyState title={`There are no movies on page ${String(state.page)}`} action={<Button onClick={onFirstPage}>Go to the first page</Button>} />
     );
   }
   if (hasFilters(state)) {
     return (
-      <Panel>
-        <p className="text-neutral-300">No movies {describeFilters(state)}.</p>
-        <PanelButton onClick={onClear}>Clear search</PanelButton>
-      </Panel>
+      <EmptyState
+        icon={<SearchIcon size={28} />}
+        title={`No movies ${describeFilters(state)}`}
+        action={<Button onClick={onClear}>Clear search</Button>}
+      />
     );
   }
   return (
-    <Panel>
-      <p className="text-neutral-300">The catalog is empty.</p>
-      <p className="text-sm text-neutral-500">
-        Add one with <code className="rounded bg-white/10 px-1">make dev-ingest INPUT=… TITLE=…</code>
-      </p>
-    </Panel>
+    <EmptyState icon={<FilmIcon size={28} />} title="The catalog is empty">
+      Add one with <code className="rounded bg-overlay px-1 text-fg">make dev-ingest INPUT=… TITLE=…</code>, or eight
+      demo movies with <code className="rounded bg-overlay px-1 text-fg">make demo-seed</code>.
+    </EmptyState>
   );
 }
 
-function Panel({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex flex-col items-center gap-3 rounded-md border border-white/10 px-6 py-16 text-center">
-      {children}
-    </div>
-  );
-}
-
-function PanelButton({ onClick, children }: { onClick: () => void; children: string }) {
-  return (
-    <button type="button" onClick={onClick} className="rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20">
-      {children}
-    </button>
-  );
+/** "8 movies", "3 matches". */
+function describeCount(total: number, state: CatalogState): string {
+  const noun = hasFilters(state) ? (total === 1 ? "match" : "matches") : total === 1 ? "movie" : "movies";
+  return `${String(total)} ${noun}`;
 }
 
 function GridSkeleton() {
   return (
-    <ul aria-label="Loading movies" className="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6">
+    <ul
+      aria-label="Loading movies"
+      className="grid grid-cols-3 gap-x-3 gap-y-6 sm:grid-cols-4 sm:gap-x-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7"
+    >
       {Array.from({ length: 12 }, (_, i) => (
-        <li key={i} className="flex animate-pulse flex-col gap-2">
-          <div className="aspect-video rounded-md bg-neutral-800" />
-          <div className="h-3 w-3/4 rounded bg-neutral-800" />
-          <div className="h-3 w-1/3 rounded bg-neutral-800" />
+        <li key={i}>
+          <MovieCardSkeleton />
         </li>
       ))}
     </ul>

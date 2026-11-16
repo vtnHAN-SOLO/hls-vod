@@ -1,1 +1,222 @@
 @import "tailwindcss";
+/* Self-hosted variable fonts (woff2 bundled by Vite): no font CDN, so the
+   CSP keeps font-src at 'self'. Only the subsets a page uses are fetched
+   (unicode-range). */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/sora";
+
+/*
+ * Design tokens: the ONLY colours, fonts and motion timings in the SPA.
+ * Tailwind's default palette is switched off (--color-*: initial), so a
+ * class such as bg-neutral-800 does nothing; components use these names
+ * (bg-surface, text-fg-muted, border-line, bg-accent …) and never a hex
+ * value. src/lib/designTokens.test.ts enforces both.
+ *
+ * Contrast (WCAG 2.1): fg and fg-muted pass AAA on every surface; fg-subtle
+ * passes AA on bg, surface, raised and overlay; white on accent 5.7:1, on
+ * accent-hover 7.1:1, on danger-strong 4.8:1.
+ */
+@theme {
+  --color-*: initial;
+
+  /* Surfaces, darkest first. */
+  --color-bg: #09090d;
+  --color-surface: #111118;
+  --color-raised: #181822;
+  --color-overlay: #22222e;
+  --color-overlay-hover: #2c2c3a;
+  /* Over images and video: gradients and scrims. */
+  --color-scrim: #000000;
+
+  /* Borders. */
+  --color-line: rgb(255 255 255 / 0.09);
+  --color-line-strong: rgb(255 255 255 / 0.22);
+
+  /* Text levels. */
+  --color-fg: #f3f3f7;
+  --color-fg-muted: #b6b6c4;
+  --color-fg-subtle: #8f8fa1;
+
+  /* One accent: violet. */
+  --color-accent: #7c3aed;
+  --color-accent-hover: #6d28d9;
+  --color-accent-soft: #c4b5fd;
+  --color-on-accent: #ffffff;
+
+  /* States. */
+  --color-success: #6ee7b7;
+  --color-warning: #fcd34d;
+  --color-danger: #fca5a5;
+  --color-danger-strong: #dc2626;
+  --color-danger-strong-hover: #b91c1c;
+
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Sora Variable", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+
+  /* Motion: 150–250 ms. */
+  --default-transition-duration: 200ms;
+  --ease-out-soft: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+@layer base {
+  html {
+    background-color: var(--color-bg);
+    color: var(--color-fg);
+    color-scheme: dark;
+  }
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.01em;
+  }
+  /* One visible focus ring everywhere, keyboard only. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent-soft);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background-color: var(--color-accent);
+    color: var(--color-on-accent);
+  }
+}
+
+@layer components {
+  /* Text inputs and selects. */
+  .field {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-line);
+    background-color: var(--color-surface);
+    padding: 0.5rem 0.75rem;
+    font-size: var(--text-sm);
+    line-height: var(--text-sm--line-height);
+    color: var(--color-fg);
+    transition: border-color 150ms;
+  }
+  .field::placeholder {
+    color: var(--color-fg-subtle);
+  }
+  .field:focus {
+    outline: none;
+    border-color: var(--color-accent-soft);
+  }
+  .field:focus-visible {
+    outline: none;
+  }
+}
+
+/* The player. */
+
+/* Subtitles: token colours, three sizes (the player sets data-cue-size on
+   the <video>), the size relative to the browser's own cue size. */
+video::cue {
+  color: var(--color-fg);
+  background-color: color-mix(in srgb, var(--color-scrim) 72%, transparent);
+  font-family: var(--font-sans);
+  line-height: 1.35;
+}
+video[data-cue-size="s"]::cue {
+  font-size: 70%;
+}
+video[data-cue-size="m"]::cue {
+  font-size: 85%;
+}
+video[data-cue-size="l"]::cue {
+  font-size: 105%;
+}
+
+/* The volume slider: a native range input (keyboard and screen readers for
+   free), drawn with tokens; --fill is the level, set by the player. */
+.player-range {
+  appearance: none;
+  height: 1.25rem;
+  background: transparent;
+  cursor: pointer;
+}
+.player-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    var(--color-fg) var(--fill, 100%),
+    color-mix(in srgb, var(--color-fg) 30%, transparent) var(--fill, 100%)
+  );
+}
+.player-range::-moz-range-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--color-fg) 30%, transparent);
+}
+.player-range::-moz-range-progress {
+  height: 4px;
+  border-radius: 9999px;
+  background: var(--color-fg);
+}
+.player-range::-webkit-slider-thumb {
+  appearance: none;
+  margin-top: -4px;
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: var(--color-fg);
+  border: 0;
+}
+.player-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: var(--color-fg);
+  border: 0;
+}
+
+/* On-screen feedback (skip bubble, volume, play/pause flash): shown at once,
+   gone over 600 ms. The player restarts the animation by remounting. */
+@keyframes feedback-fade {
+  0%,
+  35% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.12);
+  }
+}
+@keyframes feedback-fade-plain {
+  0%,
+  40% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.feedback {
+  animation: feedback-fade 600ms var(--ease-out-soft) forwards;
+}
+
+/* Horizontal rows scroll without a visible scrollbar; the arrow buttons and
+   the keyboard move them. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Reduced motion: no movement, no smooth scrolling; colour changes stay
+   (they are not motion). Components also skip transforms and autoplay. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-property: color, background-color, border-color, opacity !important;
+  }
+  /* No scaling: a plain, shorter fade (beats the rule above: a class). */
+  .feedback {
+    animation: feedback-fade-plain 400ms linear forwards !important;
+  }
+}

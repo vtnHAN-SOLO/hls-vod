@@ -14,3 +14,4 @@ costs. A decision is changed by a new ADR that supersedes the old one, never by 
 | [0007](0007-email-fixed-at-registration.md) | Email fixed at registration | Accepted |
 | [0008](0008-google-identity-by-sub.md) | Google identity by `sub` | Accepted |
 | [0009](0009-client-ip-from-trusted-proxies.md) | Client IP from trusted proxies only | Accepted |
+| [0010](0010-posters-in-postgres.md) | Posters in Postgres, served by the api | Accepted |

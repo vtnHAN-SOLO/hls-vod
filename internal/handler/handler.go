@@ -27,16 +27,24 @@ type Pinger interface {
 // Every /api/v1 endpoint needs a valid access token except the /auth/ ones
 // (login, refresh, logout, config, register, verify-email,
 // resend-verification, forgot-password, reset-password, google/start,
-// google/callback); the probes and /metrics stay open.
+// google/callback) and the signed poster images; the probes and /metrics
+// stay open.
 func NewRouter(logger *slog.Logger, reg *prometheus.Registry, db Pinger, catalog Catalog, a Auth, signup Registration, opts Options) http.Handler {
 	mux := http.NewServeMux()
 	protect := requireAuth(a)
 
 	mux.Handle("GET /api/v1/movies", protect(listMovies(logger, catalog)))
+	// More specific than /movies/{id}, so ServeMux picks these for the two
+	// literal names (never valid UUIDs anyway).
+	mux.Handle("GET /api/v1/movies/popular", protect(popularMovies(logger, catalog)))
+	mux.Handle("GET /api/v1/movies/featured", protect(featuredMovies(logger, catalog)))
 	mux.Handle("GET /api/v1/movies/{id}", protect(getMovie(logger, catalog)))
 	mux.Handle("GET /api/v1/movies/{id}/playback", protect(playback(logger, catalog)))
 	mux.Handle("POST /api/v1/progress", protect(saveProgress(logger, catalog)))
 	mux.Handle("GET /api/v1/continue-watching", protect(continueWatching(logger, catalog)))
+	// No access token: the signed URL is the permission (an <img> sends no
+	// Authorization header), as for media-delivery's /media/.
+	mux.Handle("GET /api/v1/posters/{id}/{width}/{file}", servePoster(logger, catalog))
 
 	// The account page: always the access token's own user.
 	mux.Handle("GET /api/v1/me", protect(getMe(logger, a)))
@@ -70,7 +78,7 @@ func NewRouter(logger *slog.Logger, reg *prometheus.Registry, db Pinger, catalog
 
 	// The admin area: each endpoint checks the role in the database.
 	if opts.Admin != nil {
-		registerAdmin(mux, logger, protect, opts.Admin)
+		registerAdmin(mux, logger, protect, opts.Admin, catalog)
 	}
 
 	RegisterProbes(mux, logger, reg, db)

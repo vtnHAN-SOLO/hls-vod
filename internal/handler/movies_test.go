@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/vtnHAN-SOLO/hls-vod/internal/model"
+	"github.com/vtnHAN-SOLO/hls-vod/internal/poster"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/store"
 )
 
@@ -24,6 +27,15 @@ type fakeStore struct {
 
 	gotFilter *store.MovieFilter
 
+	subtitles map[string][]model.SubtitleTrack
+	popular   []model.Popular
+	featured  []model.Movie
+	gotSince  **time.Time // set by PopularMovies: nil inside means "ever"
+	gotLimit  int
+
+	// posters are the poster.Store side: JPEG bytes by "{id}/{width}/{hex hash}".
+	posters map[string][]byte
+
 	// progress is keyed by user id, then movie id; seq orders saves.
 	mu       sync.Mutex
 	progress map[string]map[string]fakeProgress
@@ -32,6 +44,20 @@ type fakeStore struct {
 
 type fakeProgress struct {
 	pos, seq int
+}
+
+func (f *fakeStore) Put(context.Context, string, poster.Poster) error { return nil }
+func (f *fakeStore) Delete(context.Context, string) error             { return nil }
+
+func (f *fakeStore) Get(_ context.Context, id string, width int, hash []byte) ([]byte, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	b, ok := f.posters[fmt.Sprintf("%s/%d/%x", id, width, hash)]
+	if !ok {
+		return nil, poster.ErrNotFound
+	}
+	return b, nil
 }
 
 func (f *fakeStore) ListMovies(_ context.Context, flt store.MovieFilter) ([]model.Movie, int64, error) {
@@ -109,6 +135,25 @@ func (f *fakeStore) ContinueWatching(_ context.Context, userID string, finishedP
 	return out, nil
 }
 
+func (f *fakeStore) ListSubtitles(_ context.Context, id string) ([]model.SubtitleTrack, error) {
+	return f.subtitles[id], f.err
+}
+
+func (f *fakeStore) PopularMovies(_ context.Context, since *time.Time, limit int) ([]model.Popular, error) {
+	f.gotSince, f.gotLimit = &since, limit
+	return f.popular, f.err
+}
+
+func (f *fakeStore) FeaturedMovies(_ context.Context, limit int) ([]model.Movie, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if len(f.featured) > limit {
+		return f.featured[:limit], nil
+	}
+	return f.featured, nil
+}
+
 const (
 	readyID      = "0b9d6b52-2d2c-4a7b-9e0e-6a4f39a0c1d2"
 	pendingID    = "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
@@ -122,6 +167,12 @@ const (
 
 func ptr[T any](v T) *T { return &v }
 
+// readyPosterHash is the ready movie's poster hash.
+var readyPosterHash = sha256.Sum256([]byte("the ready movie's poster"))
+
+// unpublishedID is a ready movie that is not published.
+const unpublishedID = "5d1c3e0a-8f7b-4c2d-9a6e-1b2c3d4e5f60"
+
 func catalogStore() *fakeStore {
 	// A non-UTC zone, as pgx returns in the server's local time.
 	at := time.Date(2026, 11, 1, 19, 0, 0, 0, time.FixedZone("ICT", 7*3600))
@@ -131,15 +182,33 @@ func catalogStore() *fakeStore {
 	}
 	ready := movie(readyID, model.StatusReady)
 	ready.Year, ready.TMDBID, ready.RuntimeSec = ptr(1999), ptr(603), ptr(8160)
-	ready.Overview, ready.PosterPath = ptr("A hacker learns the truth."), ptr(readyVersion+"/poster.jpg")
+	ready.Overview, ready.BackdropPath = ptr("A hacker learns the truth."), ptr(readyVersion+"/poster.jpg")
 	ready.LibraryPath = ptr("library/" + readyID + "/" + readyVersion)
+	ready.PublishedAt, ready.PosterHash, ready.PosterWidths = &at, readyPosterHash[:], []int{300, 600}
 	bad := movie(badPosterID, model.StatusReady)
-	bad.PosterPath = ptr("../../etc/passwd")
+	bad.BackdropPath = ptr("../../etc/passwd")
+	bad.PublishedAt = &at
+	// Ready, with a poster and an overview, but not published: viewers
+	// never see it.
+	hidden := movie(unpublishedID, model.StatusReady)
+	hidden.Overview, hidden.PosterHash, hidden.PosterWidths = ptr("Not out yet."), readyPosterHash[:], []int{300}
+	hidden.LibraryPath = ptr("library/" + unpublishedID + "/" + readyVersion)
 
 	return &fakeStore{
 		movies: []model.Movie{ready, movie(pendingID, model.StatusPending),
-			movie(processingID, model.StatusProcessing), movie(failedID, model.StatusFailed), bad},
-		total: 5,
+			movie(processingID, model.StatusProcessing), movie(failedID, model.StatusFailed), bad, hidden},
+		total: 6,
+		posters: map[string][]byte{
+			fmt.Sprintf("%s/300/%x", readyID, readyPosterHash): []byte("\xff\xd8\xff a 300 wide jpeg"),
+			fmt.Sprintf("%s/600/%x", readyID, readyPosterHash): []byte("\xff\xd8\xff a 600 wide jpeg"),
+		},
+		subtitles: map[string][]model.SubtitleTrack{readyID: {
+			{Path: readyVersion + "/subs/0_eng.vtt", Language: "eng", Label: ptr("SDH"), Position: 0},
+			{Path: readyVersion + "/subs/1_vie.vtt", Language: "vie", Position: 1},
+			{Path: readyVersion + "/subs/2_eng.vtt", Language: "eng", Position: 2},
+			// Never a URL: a stored path that escapes the movie's folder is left out.
+			{Path: "../other/subs/3_fre.vtt", Language: "fre", Position: 3},
+		}},
 		renditions: map[string][]model.Rendition{readyID: {
 			{Height: 1080, BitrateKbps: ptr(5000), SizeBytes: ptr(int64(4_000_000_000)), PlaylistPath: "1080p/index.m3u8"},
 			{Height: 480, PlaylistPath: "480p/index.m3u8"},
@@ -199,7 +268,7 @@ func TestListMovies(t *testing.T) {
 
 			var page movieListJSON
 			decode(t, r.body, &page)
-			if page.Total != 5 || page.Limit != tt.wantLimit || page.Offset != tt.wantOff || len(page.Items) != 5 {
+			if page.Total != 6 || page.Limit != tt.wantLimit || page.Offset != tt.wantOff || len(page.Items) != 6 {
 				t.Errorf("page = total %d limit %d offset %d items %d", page.Total, page.Limit, page.Offset, len(page.Items))
 			}
 		})
@@ -217,14 +286,14 @@ func TestListMoviesBody(t *testing.T) {
 	var page movieListJSON
 	decode(t, r.body, &page)
 	ready, bad := page.Items[0], page.Items[4]
-	if ready.PosterURL == nil || mediaFile(t, *ready.PosterURL) != readyID+"/"+readyVersion+"/poster.jpg" {
-		t.Errorf("poster_url = %v, want a signed /media/…/{id}/{version}/poster.jpg", ready.PosterURL)
+	if ready.BackdropURL == nil || mediaFile(t, *ready.BackdropURL) != readyID+"/"+readyVersion+"/poster.jpg" {
+		t.Errorf("backdrop_url = %v, want a signed /media/…/{id}/{version}/poster.jpg", ready.BackdropURL)
 	}
 	if r.header.Get("Cache-Control") != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store: the body carries signed URLs", r.header.Get("Cache-Control"))
 	}
-	if bad.PosterURL != nil {
-		t.Errorf("poster_path climbing out of the movie dir became %q, want null", *bad.PosterURL)
+	if bad.BackdropURL != nil {
+		t.Errorf("backdrop_path climbing out of the movie dir became %q, want null", *bad.BackdropURL)
 	}
 	if !strings.Contains(body, `"created_at":"2026-11-01T12:00:00Z"`) {
 		t.Errorf("timestamps should be RFC 3339 UTC: %s", body)
@@ -270,6 +339,9 @@ func TestGetMovie(t *testing.T) {
 	r := doFull(t, newServerWith(t, &fakePinger{}, catalogStore()), http.MethodGet, "/api/v1/movies/"+readyID)
 	var d movieDetailJSON
 	decode(t, r.body, &d)
+	if want := []string{"en", "vi"}; !slices.Equal(d.SubtitleLanguages, want) {
+		t.Errorf("subtitle languages = %v, want %v (each once, in stream order, only playable tracks)", d.SubtitleLanguages, want)
+	}
 	if d.ID != readyID || d.Title == "" || *d.Year != 1999 || len(d.Renditions) != 2 ||
 		d.Renditions[0].Height != 1080 || d.Renditions[1].BitrateKbps != nil {
 		t.Fatalf("detail = %+v", d)
@@ -319,6 +391,20 @@ func TestPlayback(t *testing.T) {
 			}
 			if r.header.Get("Cache-Control") != "no-store" {
 				t.Errorf("Cache-Control = %q, want no-store", r.header.Get("Cache-Control"))
+			}
+			// Subtitles: signed like the playlist (same token, same folder),
+			// BCP 47 languages, the stream title as label.
+			if len(p.Subtitles) != 3 {
+				t.Fatalf("subtitles = %+v, want 3 (the unsafe path left out)", p.Subtitles)
+			}
+			for i, want := range []struct{ file, lang string }{{"0_eng.vtt", "en"}, {"1_vie.vtt", "vi"}, {"2_eng.vtt", "en"}} {
+				s := p.Subtitles[i]
+				if mediaFile(t, s.URL) != readyID+"/"+readyVersion+"/subs/"+want.file || s.Language != want.lang {
+					t.Errorf("subtitle %d = %+v, want %s %s", i, s, want.file, want.lang)
+				}
+			}
+			if p.Subtitles[0].Label == nil || *p.Subtitles[0].Label != "SDH" || p.Subtitles[1].Label != nil {
+				t.Errorf("labels = %v, %v", p.Subtitles[0].Label, p.Subtitles[1].Label)
 			}
 		})
 	}
@@ -452,9 +538,9 @@ func TestIDTraversalRejected(t *testing.T) {
 	}
 }
 
-// poster_path comes from the database; an unsafe value is never turned into
+// backdrop_path comes from the database; an unsafe value is never turned into
 // a /media/ URL, whatever form the escape takes.
-func TestPosterPathConfined(t *testing.T) {
+func TestBackdropPathConfined(t *testing.T) {
 	tests := []struct{ name, poster string }{
 		{"../ traversal", "../../etc/passwd"},
 		{"absolute path", "/etc/passwd"},
@@ -466,13 +552,13 @@ func TestPosterPathConfined(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			st := catalogStore()
-			st.movies[0].PosterPath = ptr(tt.poster)
+			st.movies[0].BackdropPath = ptr(tt.poster)
 			r := doFull(t, newServerWith(t, &fakePinger{}, st), http.MethodGet, "/api/v1/movies/"+readyID)
 			if r.status != http.StatusOK {
 				t.Fatalf("status = %d: %s", r.status, r.body)
 			}
-			if !strings.Contains(string(r.body), `"poster_url":null`) {
-				t.Fatalf("unsafe poster_path %q was exposed: %s", tt.poster, r.body)
+			if !strings.Contains(string(r.body), `"backdrop_url":null`) {
+				t.Fatalf("unsafe backdrop_path %q was exposed: %s", tt.poster, r.body)
 			}
 		})
 	}

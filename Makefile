@@ -34,7 +34,7 @@ LOAD_ENV = if [ ! -f .env ]; then echo ".env not found: create it from .env.exam
 	set -a; . ./.env; set +a
 
 .PHONY: setup tools system-tools web-tools hooks check build vet lint test secrets vulncheck gosec frontend run clean \
-	db-up db-down migrate migrate-down scan dispatch user-add dev-ingest media-up media-check web-dev web-build
+	db-up db-down migrate migrate-down scan dispatch user-add dev-ingest demo-seed media-up media-check web-dev web-build
 
 ## setup: install dev tools and git hooks, then verify system tools (run after a fresh clone)
 setup: tools hooks system-tools web-tools
@@ -164,12 +164,21 @@ user-add:
 	@$(LOAD_ENV); go run ./cmd/useradmin add --role "$${ROLE:-user}" "$(USER)"
 
 ## dev-ingest: put one local movie in the local catalog as ready (dev only, until the transcoder Job runs)
-##   make dev-ingest INPUT=~/Videos/movie.mp4 TITLE="My test"   (prints the new movie id)
-# INPUT and TITLE reach the tool through the environment (make exports
-# command-line variables), never spliced into the shell command, so quotes or
-# $ in a title cannot break out.
+##   make dev-ingest INPUT=~/Videos/movie.mp4 TITLE="My test" [YEAR=2020] [OVERVIEW="..."]
+##     [POSTER=poster.png] [PUBLISH=1]   (prints the new movie id; PUBLISH needs POSTER and OVERVIEW)
+# INPUT, TITLE, YEAR, OVERVIEW and POSTER reach the tool through the environment
+# (make exports command-line variables), never spliced into the shell command,
+# so quotes or $ in a title cannot break out.
 dev-ingest:
-	@$(LOAD_ENV); go run ./tools/devingest --input "$${INPUT:-}" --title "$${TITLE:-}"
+	@$(LOAD_ENV); go run ./tools/devingest --input "$${INPUT:-}" --title "$${TITLE:-}" \
+		--year "$${YEAR:-0}" --overview "$${OVERVIEW:-}" --poster "$${POSTER:-}" \
+		$${PUBLISH:+--publish}
+
+## demo-seed: put 8 demo movies (synthetic ffmpeg clips, invented titles) in the local catalog,
+##   ready and published, each with a poster cut from one of its frames (dev only; writes to
+##   $$MEDIA_ROOT and the compose Postgres; twice adds them twice)
+demo-seed:
+	@$(LOAD_ENV); scripts/demo-seed.sh
 
 clean:
 	rm -rf bin coverage.out

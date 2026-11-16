@@ -210,7 +210,7 @@ func TestJobMode(t *testing.T) {
 		// The version folder is the job's id.
 		v := jobOf(t, f.id)
 		m, err := st.GetMovie(t.Context(), f.id)
-		if err != nil || *m.LibraryPath != "library/"+f.id+"/"+v || *m.PosterPath != v+"/poster.jpg" ||
+		if err != nil || *m.LibraryPath != "library/"+f.id+"/"+v || *m.BackdropPath != v+"/poster.jpg" ||
 			*m.RuntimeSec < 3 || *m.RuntimeSec > 5 || m.LibraryCleanupAfter != nil {
 			t.Fatalf("movie = %+v, %v", m, err)
 		}
@@ -418,7 +418,7 @@ func TestJobMode(t *testing.T) {
 			t.Fatalf("state = %+v", s)
 		}
 		m := movieOf(t, f.id)
-		if *m.LibraryPath != "library/"+f.id+"/"+newVersion || *m.PosterPath != newVersion+"/poster.jpg" {
+		if *m.LibraryPath != "library/"+f.id+"/"+newVersion || *m.BackdropPath != newVersion+"/poster.jpg" {
 			t.Fatalf("movie = %+v; want the new version", m)
 		}
 		if m.LibraryCleanupAfter == nil || m.LibraryCleanupAfter.Before(before.Add(grace-time.Minute)) ||

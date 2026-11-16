@@ -51,17 +51,18 @@ sequenceDiagram
 
 ## Watcher: one run
 
-Each run does five steps, in this order. Every step tolerates a second run doing the same work
+Each run does six steps, in this order. Every step tolerates a second run doing the same work
 at the same time.
 
 ```mermaid
 flowchart LR
     purge["1. purge<br/>movies in status deleting:<br/>library/{id}/, source, then row"]
     cleanup["2. cleanup<br/>old versions whose grace<br/>has passed (row lock)"]
-    prune["3. prune<br/>auth rows no longer in use<br/>(bounded batches)"]
-    reconcile["4. reconcile<br/>orphaned sources/ files<br/>back to inbox/"]
-    claim["5. claim<br/>settled inbox/ files<br/>→ sources/ + queued job"]
-    purge --> cleanup --> prune --> reconcile --> claim
+    subs["3. subtitles<br/>rows for movies published<br/>before subtitle_tracks"]
+    prune["4. prune<br/>auth rows no longer in use<br/>(bounded batches)"]
+    reconcile["5. reconcile<br/>orphaned sources/ files<br/>back to inbox/"]
+    claim["6. claim<br/>settled inbox/ files<br/>→ sources/ + queued job"]
+    purge --> cleanup --> subs --> prune --> reconcile --> claim
 ```
 
 - **Purge before reconcile.** A deleted movie's row is removed only after its source file, so
@@ -77,6 +78,9 @@ flowchart LR
   rename and commit, reconcile skips this run. So "a file in `sources/` with no row" really
   means a crash, never a claim in progress. Such files go back to the inbox once they are old
   enough.
+- **Subtitles** reads the `subs/` folder of the current version of every ready movie that has
+  no subtitle rows, and writes them under the movie's row lock, only if `library_path` is still
+  the one it read. A retranscode publishing meanwhile wins; a second run finds nothing to do.
 - **Prune** deletes at most 1000 rows per batch and 10 batches per table per run.
 
 ## Transcoder: job mode

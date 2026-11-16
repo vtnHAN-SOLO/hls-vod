@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -16,6 +19,7 @@ import (
 	"github.com/vtnHAN-SOLO/hls-vod/internal/medialayout"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/model"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/pgtest"
+	"github.com/vtnHAN-SOLO/hls-vod/internal/poster"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/store"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/transcode"
 )
@@ -100,10 +104,60 @@ func TestIngest(t *testing.T) {
 		return movies, renditions
 	}
 
+	t.Run("a poster and publish: stored and published with the movie", func(t *testing.T) {
+		root := t.TempDir()
+		rec := &recorder{Store: st}
+		posterFile := filepath.Join(t.TempDir(), "poster.jpg") // a PNG, whatever the name says
+		writePNG(t, posterFile, 800, 1000)
+		req := rec.request(root, clip, "Published")
+		req.Overview, req.Poster, req.Publish = "With a poster.", posterFile, true
+		id, err := ingestMovie(t.Context(), log, rec, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := st.GetMovie(t.Context(), id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// 800x1000 crops to 666x999: the 1000 width would be an upscale.
+		if m.PublishedAt == nil || !slices.Equal(m.PosterWidths, []int{300, 600}) {
+			t.Fatalf("published %v widths %v", m.PublishedAt, m.PosterWidths)
+		}
+	})
+
+	t.Run("publish without a poster or an overview is a usage error, before any work", func(t *testing.T) {
+		posterFile := filepath.Join(t.TempDir(), "poster.png")
+		writePNG(t, posterFile, 300, 450)
+		for name, req := range map[string]request{
+			"no poster":   {Overview: "Text", Publish: true},
+			"no overview": {Poster: posterFile, Publish: true},
+		} {
+			rec := &recorder{Store: st}
+			r := rec.request(t.TempDir(), clip, "x")
+			r.Overview, r.Poster, r.Publish = req.Overview, req.Poster, req.Publish
+			if _, err := ingestMovie(t.Context(), log, rec, r); !errors.Is(err, errUsage) || rec.transcode != 0 {
+				t.Errorf("%s: err %v, %d transcodes", name, err, rec.transcode)
+			}
+		}
+		// A refused image fails before the transcode too.
+		text := filepath.Join(t.TempDir(), "poster.png")
+		if err := os.WriteFile(text, []byte("not an image"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		rec := &recorder{Store: st}
+		r := rec.request(t.TempDir(), clip, "x")
+		r.Poster = text
+		if _, err := ingestMovie(t.Context(), log, rec, r); !errors.Is(err, poster.ErrUnsupported) || rec.transcode != 0 {
+			t.Errorf("text as a poster: err %v, %d transcodes", err, rec.transcode)
+		}
+	})
+
 	t.Run("ingests a movie end to end", func(t *testing.T) {
 		root := t.TempDir()
 		rec := &recorder{Store: st}
-		id, err := ingestMovie(t.Context(), log, rec, rec.request(root, clip, "  My test  "))
+		req := rec.request(root, clip, "  My test  ")
+		req.Year, req.Overview = 2019, "  A test clip.  "
+		id, err := ingestMovie(t.Context(), log, rec, req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -116,8 +170,9 @@ func TestIngest(t *testing.T) {
 			t.Fatal(err)
 		}
 		if m.Title != "My test" || m.Status != model.StatusReady || m.SourcePath != "sources/"+id+".mp4" ||
-			!strings.HasPrefix(*m.LibraryPath, "library/"+id+"/") || *m.PosterPath != version(*m.LibraryPath)+"/"+ffmpeg.PosterName ||
-			*m.RuntimeSec < 5 || *m.RuntimeSec > 7 {
+			!strings.HasPrefix(*m.LibraryPath, "library/"+id+"/") || *m.BackdropPath != version(*m.LibraryPath)+"/"+ffmpeg.PosterName ||
+			*m.RuntimeSec < 5 || *m.RuntimeSec > 7 ||
+			m.Year == nil || *m.Year != 2019 || m.Overview == nil || *m.Overview != "A test clip." {
 			t.Fatalf("movie = %+v", m)
 		}
 
@@ -215,9 +270,13 @@ func TestIngest(t *testing.T) {
 
 	t.Run("usage errors", func(t *testing.T) {
 		rec := &recorder{Store: st}
+		withYear := func(y int) request { r := rec.request(t.TempDir(), clip, "Title"); r.Year = y; return r }
+		longOverview := rec.request(t.TempDir(), clip, "Title")
+		longOverview.Overview = strings.Repeat("x", 2001)
 		for _, req := range []request{
 			rec.request(t.TempDir(), "", "Title"),
 			rec.request(t.TempDir(), clip, "   "),
+			withYear(1879), withYear(2101), longOverview,
 		} {
 			if _, err := ingestMovie(t.Context(), log, rec, req); !errors.Is(err, errUsage) {
 				t.Errorf("err = %v, want errUsage", err)
@@ -280,4 +339,23 @@ func copyForTest(t *testing.T, src, dst string) {
 // version is the version folder of a library_path "library/{id}/{version}".
 func version(libraryPath string) string {
 	return libraryPath[strings.LastIndexByte(libraryPath, '/')+1:]
+}
+
+// writePNG writes a w×h PNG to path.
+func writePNG(t *testing.T, path string, w, h int) {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			img.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 60, A: 255}) // #nosec G115 -- wraps on purpose
+		}
+	}
+	f, err := os.Create(path) // #nosec G304 -- under t.TempDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := png.Encode(f, img); err != nil {
+		t.Fatal(err)
+	}
 }

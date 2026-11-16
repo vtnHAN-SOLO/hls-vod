@@ -842,3 +842,21 @@ func TestExtractSubtitlesSkipsBrokenTrack(t *testing.T) {
 		t.Fatalf("cancelled: err = %v, want context.Canceled", err)
 	}
 }
+
+// ParseSubtitleName reads back exactly what subtitlePath writes, and
+// nothing else (the watcher's backfill trusts it with file names).
+func TestParseSubtitleName(t *testing.T) {
+	for i, s := range []SubtitleStream{{Language: "eng"}, {Language: "FRE", Forced: true}, {Language: "x-y"}, {}} {
+		name := strings.TrimPrefix(subtitlePath(i+7, s), SubtitlesDir+"/")
+		pos, lang, forced, ok := ParseSubtitleName(name)
+		if !ok || pos != i+7 || lang != LanguageTag(s.Language) || forced != s.Forced {
+			t.Errorf("%q -> %d %q %v %v", name, pos, lang, forced, ok)
+		}
+	}
+	for _, bad := range []string{"0_eng.srt", "eng.vtt", "_eng.vtt", "x_eng.vtt", "01_eng.vtt", "0_english.vtt",
+		"0_EN.vtt", "0_eng_extra.vtt", "../0_eng.vtt", "0_e.vtt", "99999_eng.vtt", "-1_eng.vtt"} {
+		if _, _, _, ok := ParseSubtitleName(bad); ok {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

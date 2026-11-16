@@ -14,9 +14,11 @@ Postgres enums. Every table but `oauth_states` and `outgoing_mail` (both never u
 ```mermaid
 erDiagram
     movies ||--o{ renditions : "has"
+    movies ||--o{ subtitle_tracks : "has"
     movies ||--o{ transcode_jobs : "has"
     movies ||--o{ watch_progress : "watched in"
     users ||--o{ watch_progress : "watches"
+    movies ||--o{ movie_posters : "poster variants"
     users ||--o{ refresh_tokens : "sessions"
     users ||--o{ email_tokens : "verify / reset"
     users ||--o| user_identities : "Google"
@@ -32,9 +34,26 @@ erDiagram
         int runtime_sec
         text source_path UK "sources/{id}.{ext}"
         text library_path "library/{id}/{version}"
-        text poster_path "relative to library/{id}/"
+        text backdrop_path "the video frame, relative to library/{id}/"
         timestamptz library_cleanup_after
+        timestamptz featured_at "set while in the spotlight"
+        timestamptz published_at "set while viewers see it"
+        bytea poster_hash "SHA-256 of the largest poster variant"
         text status "pending|processing|ready|failed|deleting"
+    }
+    movie_posters {
+        uuid movie_id PK "and FK"
+        int width PK "300, 600, 1000"
+        int height "width x 3 / 2"
+        bytea bytes "JPEG, never read by lists"
+    }
+    subtitle_tracks {
+        uuid id PK
+        uuid movie_id FK
+        text path "{version}/subs/{n}_{lang}.vtt, UNIQUE per movie"
+        text language "ISO 639 tag, und when unknown"
+        text label "the stream title, nullable"
+        int position "source stream order"
     }
     renditions {
         uuid id PK
@@ -117,6 +136,11 @@ Notes on the model:
   `library_path` points at the current one and every playback URL is built from it. Older
   movies keep the original layout (`library_path = library/{id}`). See
   [ADR 0006](decisions/0006-versioned-library-folders.md).
+- **Subtitles follow the version.** The transcoder extracts every text subtitle stream to
+  `{version}/subs/{n}_{lang}.vtt`, and the transaction that publishes the version replaces the
+  movie's `subtitle_tracks` rows. Playback signs each file with the playlist's token, and
+  gives a BCP 47 language (`eng` → `en`) for the browser's `<track>`. Movies published before
+  the table got their rows from a one-time watcher backfill.
 - **Sessions are refresh-token families.** A login creates a family; each refresh inserts a new
   row and revokes the old one (`replaced_by`). Presenting a revoked token revokes the whole
   family. There is no sessions table: a session is a family with a live token. See
@@ -125,6 +149,21 @@ Notes on the model:
   OAuth state) as SHA-256, mail recipients as SHA-256 of the address.
 - **One active job per movie** is enforced by the database: a partial unique index on
   `transcode_jobs (movie_id) WHERE status IN ('queued', 'running')`.
+- **Publishing.** Viewers see a movie only once an admin publishes it (`published_at`), and
+  only a `ready` movie with a poster and a non-empty overview can be published. A CHECK on
+  `movies` enforces this in the database itself, so no code path can publish an incomplete
+  movie or take the poster or overview away from a published one; deleting clears
+  `published_at` in the same statement. Unpublishing also takes the movie out of the spotlight.
+- **Posters and backdrops.** The backdrop is the landscape video frame the transcoder writes
+  (`backdrop_path`, on media-delivery). The poster is a portrait 2:3 image an admin uploads,
+  kept as JPEG variants in `movie_posters` with its hash on the movie row and served by the api.
+  See [ADR 0010](decisions/0010-posters-in-postgres.md).
+- **Browsing.** Most popular counts distinct viewers: `watch_progress` has one row per (user,
+  movie), so the rows saved within a window (last 7 or 30 days, or ever), grouped by movie, rank
+  the published movies; a movie nobody watched in the window is not ranked. `featured_at` puts a
+  published movie in the home page's spotlight, newest featured first; with none featured the
+  spotlight shows the 5 newest published movies. `top_height` (the tallest rendition) is read with
+  every movie, never stored.
 - **Cleanup.** The watcher deletes refresh-token families with no live token for 7 days, email
   tokens used or expired 7 days ago, and expired OAuth states. `outgoing_mail` prunes itself
   (rows older than 2 days) on every send.
@@ -137,12 +176,13 @@ Kubernetes permission; file work belongs to the watcher and the transcoder.
 ```mermaid
 flowchart TB
     subgraph api["api"]
-        catalog["Catalog<br/>list, search, detail, playback, progress"]
+        catalog["Catalog<br/>list, search, detail, playback, progress,<br/>most popular, spotlight"]
         authsvc["Auth<br/>login, refresh, logout, account, sessions"]
         reg["Registration<br/>register, verify, resend, forgot, reset"]
         google["Google<br/>sign-in and link (OIDC)"]
-        admin["Admin<br/>users, jobs, retry, delete, retranscode"]
+        admin["Admin<br/>users, jobs, retry, delete, retranscode,<br/>edit, poster, publish, feature"]
         signer["MediaSigner<br/>the only place URLs are signed"]
+        posters["poster.Store<br/>poster variants (Postgres)"]
     end
     subgraph ingest["ingest (outside the api)"]
         watcher["watcher<br/>claim, queue, purge, clean"]
@@ -150,6 +190,7 @@ flowchart TB
         transcoder["transcoder<br/>ffprobe, remux / encode, publish"]
     end
     catalog --> signer
+    catalog & admin --> posters
     reg --> authsvc
     google --> authsvc
     pg[("Postgres")]
@@ -159,11 +200,11 @@ flowchart TB
 
 | Service | Owns | Key rules |
 |---|---|---|
-| **Catalog** | movies as users see them, playback, watch progress | users see `ready` movies only; playback returns signed URLs (6 h) and the saved position (null when ≥ 95 % watched); progress is always the token's user, never the body's |
+| **Catalog** | movies as users see them, playback, watch progress, browsing, poster images | users see published movies only (an admin sees all and may play an unpublished one); poster URLs are signed by the api and served from the database; playback returns signed URLs (6 h) and the saved position (null when ≥ 95 % watched); progress is always the token's user, never the body's; most popular ranks by distinct viewers in a window; the spotlight is the featured movies, else the newest |
 | **Auth** | login, refresh, logout, the caller's account and sessions | access token 15 min (HS256, carries `sid` = family), refresh cookie 30 days, rotating; per-username+IP and per-IP throttles; endpoints that manage sessions or credentials re-check in the database that the caller's family is still live |
 | **Registration / recovery** | sign-up, email verification, forgot / reset password | the same answer whether or not an address has an account; mail sent in the background; Turnstile fails closed; tokens single use, carried in the URL fragment |
 | **Google sign-in** | sign-in and linking with Google (OIDC code flow + PKCE) | the Google account is identified by `sub` only; a verified local account with the same email is linked, an unverified one is replaced. See [ADR 0008](decisions/0008-google-identity-by-sub.md) |
-| **Admin** | users (disable, role), jobs, movies (retry, delete, retranscode) | the role is checked in the database on every call; never zero active admins; every action logged |
+| **Admin** | users (disable, role), jobs, movies (retry, delete, retranscode, edit metadata, upload a poster, publish, feature) | the role is checked in the database on every call; never zero active admins; every action logged |
 | **Ingest** | the media pipeline: watcher → dispatcher → transcoder | pre-transcoded HLS, remux when the codec allows, never upscale. See [ADR 0001](decisions/0001-pre-transcoded-hls.md) |
 
 ## Movie states

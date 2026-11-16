@@ -23,7 +23,7 @@ func TestCreateMovie(t *testing.T) {
 	newMovie := func(source string) store.NewMovie {
 		id := model.NewID()
 		return store.NewMovie{ID: id, Title: "T " + source, SourcePath: source, LibraryPath: "library/" + id,
-			PosterPath: "poster.jpg", RuntimeSec: 14, Status: model.StatusReady}
+			BackdropPath: "poster.jpg", RuntimeSec: 14, Status: model.StatusReady}
 	}
 	rungs := []store.NewRendition{
 		{Height: 720, BitrateKbps: 2500, PlaylistPath: "720p/index.m3u8", SizeBytes: 5_000_000},
@@ -47,7 +47,7 @@ func TestCreateMovie(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got.Title != m.Title || got.Status != model.StatusReady || got.SourcePath != "sources/a.mp4" ||
-			*got.LibraryPath != m.LibraryPath || *got.PosterPath != "poster.jpg" || *got.RuntimeSec != 14 {
+			*got.LibraryPath != m.LibraryPath || *got.BackdropPath != "poster.jpg" || *got.RuntimeSec != 14 {
 			t.Fatalf("movie = %+v", got)
 		}
 		rs, err := st.ListRenditions(t.Context(), m.ID)

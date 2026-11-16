@@ -1,14 +1,17 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/vtnHAN-SOLO/hls-vod/internal/ffmpeg"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/medialayout"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/mediapath"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/model"
@@ -40,6 +43,8 @@ type queue interface {
 	PurgeMovie(ctx context.Context, id string) error
 	CleanupDue(ctx context.Context) ([]string, error)
 	CleanupLibrary(ctx context.Context, id string, clean func(libraryPath *string) error) (bool, error)
+	SubtitleBackfillCandidates(ctx context.Context) ([]store.SubtitleCandidate, error)
+	BackfillSubtitles(ctx context.Context, movieID, libraryPath string, ts []model.SubtitleTrack) (bool, error)
 	SourceClaimed(ctx context.Context, sourcePath string) (bool, error)
 	PruneAuthRows(ctx context.Context, batch, maxBatches int) (store.Pruned, error)
 }
@@ -57,13 +62,14 @@ type scanner struct {
 }
 
 type report struct {
-	Deleted  int // movies an admin deleted: files and row removed
-	Cleaned  int // movies whose old versions (or leftovers) were removed
-	Claimed  int // moved to sources/ and queued
-	Skipped  int // not a candidate yet, or taken by another run
-	Released int // orphaned sources returned to the inbox
-	Failed   int
-	Pruned   store.Pruned // auth rows that can never be used again
+	Deleted   int // movies an admin deleted: files and row removed
+	Cleaned   int // movies whose old versions (or leftovers) were removed
+	Subtitled int // movies published before subtitle_tracks that got their rows
+	Claimed   int // moved to sources/ and queued
+	Skipped   int // not a candidate yet, or taken by another run
+	Released  int // orphaned sources returned to the inbox
+	Failed    int
+	Pruned    store.Pruned // auth rows that can never be used again
 }
 
 // Row cleanup bounds: at most pruneBatch × pruneMaxBatches rows per table
@@ -74,7 +80,8 @@ const (
 )
 
 // run is one scan, in this order: purge (remove the movies admins
-// deleted), cleanup (old versions whose grace has passed), prune (auth rows
+// deleted), cleanup (old versions whose grace has passed), subtitles (rows
+// for movies published before subtitle_tracks existed), prune (auth rows
 // no longer in use), reconcile (return crash leftovers to the inbox), then
 // claim every eligible inbox file. It is safe to run concurrently with itself: the
 // rename into sources/ is the lock, so each file is claimed exactly once.
@@ -96,6 +103,9 @@ func (s *scanner) run(ctx context.Context) (report, error) {
 		errs = append(errs, err)
 	}
 	if err := s.cleanup(ctx, &r); err != nil {
+		errs = append(errs, err)
+	}
+	if err := s.backfillSubtitles(ctx, &r); err != nil {
 		errs = append(errs, err)
 	}
 	if err := s.prune(ctx, &r); err != nil {
@@ -371,6 +381,73 @@ func (s *scanner) cleanOne(id string, libraryPath *string) error {
 		s.log.Info("old version removed", "movie_id", id, "entry", dir+"/"+name, "kept", keep)
 	}
 	return nil
+}
+
+// backfillSubtitles gives the movies published before subtitle_tracks
+// existed their rows: ready movies with no rows whose current version has a
+// subs/ folder. The files are read back by name ({n}_{lang}[_forced].vtt,
+// as the transcoder writes them); the stream titles were never stored, so
+// labels stay empty. Idempotent: the store writes only while the movie
+// still plays that version and has no rows, so a second run, or one racing
+// a retranscode, changes nothing.
+func (s *scanner) backfillSubtitles(ctx context.Context, r *report) error {
+	cs, err := s.q.SubtitleBackfillCandidates(ctx)
+	if err != nil {
+		r.Failed++
+		return err
+	}
+	var errs []error
+	for _, c := range cs {
+		ts, err := s.subtitleFiles(c)
+		if err == nil && len(ts) > 0 {
+			var wrote bool
+			wrote, err = s.q.BackfillSubtitles(ctx, c.ID, c.LibraryPath, ts)
+			if wrote {
+				r.Subtitled++
+				s.log.Info("subtitle rows backfilled", "movie_id", c.ID, "tracks", len(ts))
+			}
+		}
+		if err != nil {
+			s.log.Error("subtitle backfill failed; the next run retries", "movie_id", c.ID, "err", err)
+			errs = append(errs, err)
+			r.Failed++
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// subtitleFiles lists the WebVTT tracks in the current version's subs/
+// folder, in stream order; none when there is no such folder.
+func (s *scanner) subtitleFiles(c store.SubtitleCandidate) ([]model.SubtitleTrack, error) {
+	version, ok := medialayout.Version(c.ID, c.LibraryPath)
+	if !model.ValidID(c.ID) || !ok {
+		// Cleanup reports such a movie as a failure already; nothing is read on a guess.
+		s.log.Warn("subtitle backfill skipped: library_path is not library/{id}[/{version}]",
+			"movie_id", c.ID, "library_path", c.LibraryPath)
+		return nil, nil
+	}
+	dir := c.LibraryPath + "/" + ffmpeg.SubtitlesDir
+	entries, err := s.root.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("listing %s/: %w", dir, err)
+	}
+	var ts []model.SubtitleTrack
+	for _, e := range entries {
+		pos, lang, _, ok := ffmpeg.ParseSubtitleName(e.Name())
+		if !ok || !e.Type().IsRegular() {
+			continue
+		}
+		ts = append(ts, model.SubtitleTrack{
+			Path: medialayout.InVersion(version, ffmpeg.SubtitlesDir+"/"+e.Name()), Language: lang, Position: pos,
+		})
+	}
+	slices.SortFunc(ts, func(a, b model.SubtitleTrack) int {
+		return cmp.Or(a.Position-b.Position, strings.Compare(a.Path, b.Path))
+	})
+	return ts, nil
 }
 
 // prune deletes the database rows that can never be used again (see

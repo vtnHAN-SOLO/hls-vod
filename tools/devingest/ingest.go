@@ -9,15 +9,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/vtnHAN-SOLO/hls-vod/internal/ingest"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/medialayout"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/mediapath"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/model"
+	"github.com/vtnHAN-SOLO/hls-vod/internal/poster"
+	"github.com/vtnHAN-SOLO/hls-vod/internal/service"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/store"
 )
 
-var errUsage = errors.New("INPUT and TITLE are required")
+// errUsage is a bad argument: main prints the usage line.
+var errUsage = errors.New("usage")
 
 // catalog is the slice of the store devingest needs.
 type catalog interface {
@@ -28,6 +32,13 @@ type request struct {
 	MediaRoot string
 	Input     string
 	Title     string
+	Year      int    // 0: unknown; else service.MinYear..service.MaxYear
+	Overview  string // "": none; at most service.MaxOverviewLength characters
+	// Poster is an image file processed as an admin upload would be (2:3
+	// crop, JPEG variants); "": none. Publish publishes the movie, which
+	// needs a poster and an overview.
+	Poster  string
+	Publish bool
 
 	// transcode is the pipeline options for (input, output); nil means
 	// transcode.DefaultOptions. Tests shrink the poster and thumbnails.
@@ -47,7 +58,32 @@ type request struct {
 func ingestMovie(ctx context.Context, log *slog.Logger, cat catalog, req request) (id string, err error) {
 	title := strings.TrimSpace(req.Title)
 	if req.Input == "" || title == "" {
-		return "", errUsage
+		return "", fmt.Errorf("%w: INPUT and TITLE are required", errUsage)
+	}
+	var year *int
+	if req.Year != 0 {
+		if req.Year < service.MinYear || req.Year > service.MaxYear {
+			return "", fmt.Errorf("%w: YEAR must be between %d and %d", errUsage, service.MinYear, service.MaxYear)
+		}
+		year = &req.Year
+	}
+	var overview *string
+	if o := strings.TrimSpace(req.Overview); o != "" {
+		if utf8.RuneCountInString(o) > service.MaxOverviewLength {
+			return "", fmt.Errorf("%w: OVERVIEW must be at most %d characters", errUsage, service.MaxOverviewLength)
+		}
+		overview = &o
+	}
+	if req.Publish && (req.Poster == "" || overview == nil) {
+		return "", fmt.Errorf("%w: PUBLISH needs POSTER and OVERVIEW: a published movie has both", errUsage)
+	}
+	// The poster first: a refused image fails in a second, not after the
+	// transcode.
+	var pst *poster.Poster
+	if req.Poster != "" {
+		if pst, err = readPoster(ctx, req.Poster); err != nil {
+			return "", err
+		}
 	}
 	input, err := expandHome(req.Input)
 	if err != nil {
@@ -110,14 +146,41 @@ func ingestMovie(ctx context.Context, log *slog.Logger, cat catalog, req request
 
 	movie := store.NewMovie{
 		ID: id, Title: title, SourcePath: source, LibraryPath: pub.LibraryPath,
-		PosterPath: pub.PosterPath, RuntimeSec: pub.RuntimeSec, Status: model.StatusReady,
+		BackdropPath: pub.BackdropPath, RuntimeSec: pub.RuntimeSec, Status: model.StatusReady,
+		Year: year, Overview: overview, Subtitles: pub.Subtitles, Poster: pst, Publish: req.Publish,
 	}
 	rungs := pub.Renditions
 	if err := cat.CreateMovie(ctx, movie, rungs); err != nil {
 		return "", err
 	}
-	log.Info("movie ready", "id", id, "title", title, "source_path", source, "library_path", pub.LibraryPath, "renditions", len(rungs))
+	log.Info("movie ready", "id", id, "title", title, "source_path", source, "library_path", pub.LibraryPath,
+		"renditions", len(rungs), "poster", pst != nil, "published", req.Publish)
 	return id, nil
+}
+
+// readPoster processes an image file with internal/poster, the same rules
+// as an admin upload.
+func readPoster(ctx context.Context, path string) (*poster.Poster, error) {
+	path, err := expandHome(path)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("poster: %w", err)
+	}
+	if fi.Size() > poster.MaxUploadBytes {
+		return nil, fmt.Errorf("poster %s: %w", path, poster.ErrTooLarge)
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- a path the developer typed on the command line
+	if err != nil {
+		return nil, fmt.Errorf("poster: %w", err)
+	}
+	p, err := poster.NewProcessor().Process(ctx, data)
+	if err != nil {
+		return nil, fmt.Errorf("poster %s: %w", path, err)
+	}
+	return &p, nil
 }
 
 func expandHome(p string) (string, error) {

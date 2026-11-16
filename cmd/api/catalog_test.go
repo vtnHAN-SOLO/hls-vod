@@ -34,6 +34,7 @@ func TestCatalogEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	db.Publish(t.Context(), t, ready)
 
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {

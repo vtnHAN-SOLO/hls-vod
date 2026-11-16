@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/caarlos0/env/v11"
 
@@ -69,6 +71,10 @@ type API struct {
 	// mail, link included, to the api log; refused off loopback). Required,
 	// no default.
 	MailBackend string `env:"MAIL_BACKEND,required,notEmpty"`
+	// SiteName is the product's name in mails (subjects, bodies, signature).
+	// A deployment may call the product something else; the default is the
+	// neutral name (mail.DefaultSiteName spells the same value).
+	SiteName string `env:"SITE_NAME" envDefault:"HLS VOD"`
 	// MailFrom is the sender, e.g. "HLS VOD <noreply@DOMAIN>", and
 	// PublicBaseURL the SPA's origin the mailed links point at. Both
 	// required when registration is open.
@@ -196,6 +202,11 @@ func (a API) validateRegistration() []error {
 		if err := checkBaseURL(a.PublicBaseURL); err != nil {
 			errs = append(errs, err)
 		}
+	}
+	// Empty is the default name (the mails fill it in); anything set must be sane.
+	if n := utf8.RuneCountInString(a.SiteName); a.SiteName != "" && (strings.TrimSpace(a.SiteName) != a.SiteName || n > 60 ||
+		strings.IndexFunc(a.SiteName, unicode.IsControl) >= 0) {
+		errs = append(errs, fmt.Errorf("SITE_NAME %q must be at most 60 characters, no control characters or surrounding spaces", a.SiteName))
 	}
 	if a.MailDailyCap < 1 {
 		errs = append(errs, errors.New("MAIL_DAILY_CAP must be at least 1"))

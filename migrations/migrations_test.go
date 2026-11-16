@@ -13,7 +13,7 @@ import (
 )
 
 var wantTables = []string{
-	"email_tokens", "movies", "oauth_states", "outgoing_mail", "refresh_tokens", "renditions", "transcode_jobs",
+	"email_tokens", "movie_posters", "movies", "oauth_states", "outgoing_mail", "refresh_tokens", "renditions", "subtitle_tracks", "transcode_jobs",
 	"user_identities", "users", "watch_progress",
 }
 

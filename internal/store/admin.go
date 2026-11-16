@@ -25,8 +25,9 @@ var (
 	ErrNotFailed = errors.New("only a failed movie can be retried")
 	// ErrJobActive means the movie has a queued or running transcode job.
 	ErrJobActive = errors.New("the movie has a queued or running transcode job")
-	// ErrMovieNotReady means a retranscode of a movie that is not ready.
-	ErrMovieNotReady = errors.New("only a ready movie can be retranscoded")
+	// ErrMovieNotReady means an action that needs a ready movie (retranscode,
+	// feature) on a movie that is not.
+	ErrMovieNotReady = errors.New("the movie is not ready")
 )
 
 // AdminCheck is the admin endpoints' check, in one query: admin is whether
@@ -221,6 +222,42 @@ func (s *Store) ListJobs(ctx context.Context, f JobFilter) ([]model.Job, int64, 
 	return jobs, total, nil
 }
 
+// adminMovieColumns are movieColumns and the movie's active job (status,
+// purpose), NULL when none is queued or running. Scan with scanAdminMovie.
+const adminMovieColumns = movieColumns + `,
+	(SELECT j.status FROM transcode_jobs j WHERE j.movie_id = movies.id AND j.status IN ('queued', 'running')),
+	(SELECT j.purpose FROM transcode_jobs j WHERE j.movie_id = movies.id AND j.status IN ('queued', 'running'))`
+
+func scanAdminMovie(row pgx.CollectableRow) (model.AdminMovie, error) {
+	var am model.AdminMovie
+	var st string
+	var job, purpose *string
+	m := &am.Movie
+	err := row.Scan(append(movieDest(m, &st), &job, &purpose)...)
+	m.Status = model.MovieStatus(st)
+	if job != nil && purpose != nil {
+		js, jp := model.JobStatus(*job), model.JobPurpose(*purpose)
+		am.ActiveJob, am.ActiveJobPurpose = &js, &jp
+	}
+	return am, err
+}
+
+// GetAdminMovie is one movie as AdminMovies lists it, or ErrNotFound.
+func (s *Store) GetAdminMovie(ctx context.Context, id string) (model.AdminMovie, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+adminMovieColumns+` FROM movies WHERE id = $1`, id)
+	if err != nil {
+		return model.AdminMovie{}, fmt.Errorf("getting movie: %w", err)
+	}
+	m, err := pgx.CollectExactlyOneRow(rows, scanAdminMovie)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.AdminMovie{}, ErrNotFound
+	}
+	if err != nil {
+		return model.AdminMovie{}, fmt.Errorf("getting movie: %w", err)
+	}
+	return m, nil
+}
+
 // AdminMovies is ListMovies for the admin area: every status, and each
 // movie's active (queued or running) job status, nil when it has none.
 func (s *Store) AdminMovies(ctx context.Context, f MovieFilter) ([]model.AdminMovie, int64, error) {
@@ -241,38 +278,22 @@ func (s *Store) AdminMovies(ctx context.Context, f MovieFilter) ([]model.AdminMo
 		title = &v
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT `+movieColumns+`,
-		       (SELECT j.status FROM transcode_jobs j WHERE j.movie_id = movies.id AND j.status IN ('queued', 'running')),
-		       (SELECT j.purpose FROM transcode_jobs j WHERE j.movie_id = movies.id AND j.status IN ('queued', 'running'))
+		SELECT `+adminMovieColumns+`
 		FROM movies
 		`+movieWhere+`
 		ORDER BY `+order+`
-		LIMIT $5 OFFSET $6`,
-		status, title, f.YearFrom, f.YearTo, f.Limit, f.Offset)
+		LIMIT $6 OFFSET $7`,
+		status, title, f.YearFrom, f.YearTo, f.PublishedOnly, f.Limit, f.Offset)
 	if err != nil {
 		return nil, 0, fmt.Errorf("listing movies: %w", err)
 	}
-	movies, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.AdminMovie, error) {
-		var am model.AdminMovie
-		var st string
-		var job, purpose *string
-		m := &am.Movie
-		err := row.Scan(&m.ID, &m.Title, &m.Year, &m.TMDBID, &m.Overview, &m.RuntimeSec,
-			&m.SourcePath, &m.LibraryPath, &m.PosterPath, &st, &m.LibraryCleanupAfter, &m.CreatedAt, &m.UpdatedAt,
-			&job, &purpose)
-		m.Status = model.MovieStatus(st)
-		if job != nil && purpose != nil {
-			js, jp := model.JobStatus(*job), model.JobPurpose(*purpose)
-			am.ActiveJob, am.ActiveJobPurpose = &js, &jp
-		}
-		return am, err
-	})
+	movies, err := pgx.CollectRows(rows, scanAdminMovie)
 	if err != nil {
 		return nil, 0, fmt.Errorf("listing movies: %w", err)
 	}
 	var total int64
 	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM movies `+movieWhere, status, title, f.YearFrom, f.YearTo,
+		`SELECT count(*) FROM movies `+movieWhere, status, title, f.YearFrom, f.YearTo, f.PublishedOnly,
 	).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("counting movies: %w", err)
 	}
@@ -338,7 +359,9 @@ func (s *Store) DeleteMovie(ctx context.Context, id string) error {
 		if active {
 			return ErrJobActive
 		}
-		if _, err := tx.Exec(ctx, `UPDATE movies SET status = 'deleting' WHERE id = $1`, id); err != nil {
+		// Unpublished in the same statement: only a ready movie may be.
+		if _, err := tx.Exec(ctx,
+			`UPDATE movies SET status = 'deleting', published_at = NULL, featured_at = NULL WHERE id = $1`, id); err != nil {
 			return fmt.Errorf("marking movie deleting: %w", err)
 		}
 		return nil

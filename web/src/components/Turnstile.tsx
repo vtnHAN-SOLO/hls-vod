@@ -49,7 +49,7 @@ export function Turnstile({ siteKey, onToken }: { siteKey: string; onToken: (tok
     <div className="flex min-h-[65px] flex-col gap-1">
       <div ref={box} />
       {failed && (
-        <p role="alert" className="text-sm text-red-300">
+        <p role="alert" className="text-sm text-danger">
           The check could not load. Disable blockers for challenges.cloudflare.com, or reload the page.
         </p>
       )}

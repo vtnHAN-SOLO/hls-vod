@@ -54,7 +54,7 @@ func newServerFull(t *testing.T, db Pinger, st *fakeStore, as *fakeAuthStore, op
 	a := service.NewAuth(as, fixtures(t).hasher, fixtures(t).signer, auth.NewThrottle(), auth.NewThrottle(), slog.New(slog.DiscardHandler))
 	signup := service.NewRegistration(newFakeRegStore(as), fixtures(t).hasher, &fakeCaptcha{}, &fakeMailer{}, a,
 		service.RegistrationConfig{Open: true, BaseURL: testBaseURL, TurnstileSiteKey: testSiteKey}, slog.New(slog.DiscardHandler))
-	srv := httptest.NewServer(NewRouter(slog.New(slog.DiscardHandler), reg, db, service.NewCatalog(st, fixtures(t).media), a, signup, opts))
+	srv := httptest.NewServer(NewRouter(slog.New(slog.DiscardHandler), reg, db, service.NewCatalog(st, st, fixtures(t).media), a, signup, opts))
 	t.Cleanup(srv.Close)
 	return srv, as
 }

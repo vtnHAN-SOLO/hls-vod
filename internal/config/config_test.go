@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	pmail "github.com/vtnHAN-SOLO/hls-vod/internal/mail"
 )
 
 // testDSN is deliberately not a real connection string: config only checks
@@ -254,7 +256,7 @@ func clearEnv(t *testing.T) {
 	for _, k := range []string{"DATABASE_URL", "HTTP_ADDR", "SHUTDOWN_TIMEOUT", "LOG_LEVEL", "MEDIA_ROOT", "JWT_SIGNING_KEY", "MEDIA_SIGNING_KEY", "DEV_MEDIA_URL_TTL",
 		"TRUSTED_PROXIES",
 		"REGISTRATION_OPEN", "MAIL_BACKEND", "MAIL_FROM", "PUBLIC_BASE_URL", "RESEND_API_KEY", "MAIL_DAILY_CAP",
-		"TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY"} {
+		"TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY", "SITE_NAME"} {
 		t.Setenv(k, "") // registers restore on cleanup
 		if err := os.Unsetenv(k); err != nil {
 			t.Fatalf("unsetenv %s: %v", k, err)
@@ -399,6 +401,19 @@ func TestLoadAPIRegistration(t *testing.T) {
 			}
 		}},
 		{name: "MAIL_DAILY_CAP at least 1", env: with(closed, "MAIL_DAILY_CAP", "0"), wantErr: "MAIL_DAILY_CAP"},
+		{name: "SITE_NAME defaults to the neutral name", env: with(closed), check: func(t *testing.T, c API) {
+			if c.SiteName != pmail.DefaultSiteName {
+				t.Errorf("SiteName = %q, want %q", c.SiteName, pmail.DefaultSiteName)
+			}
+		}},
+		{name: "SITE_NAME set", env: with(closed, "SITE_NAME", "Moviebox"), check: func(t *testing.T, c API) {
+			if c.SiteName != "Moviebox" {
+				t.Errorf("SiteName = %q", c.SiteName)
+			}
+		}},
+		{name: "SITE_NAME not blank", env: with(closed, "SITE_NAME", " "), wantErr: "SITE_NAME"},
+		{name: "SITE_NAME no control characters", env: with(closed, "SITE_NAME", "a\nb"), wantErr: "SITE_NAME"},
+		{name: "SITE_NAME at most 60 characters", env: with(closed, "SITE_NAME", strings.Repeat("é", 61)), wantErr: "SITE_NAME"},
 		{name: "Google off by default", env: with(closed), check: func(t *testing.T, c API) {
 			if c.GoogleEnabled() {
 				t.Error("Google enabled without a client")

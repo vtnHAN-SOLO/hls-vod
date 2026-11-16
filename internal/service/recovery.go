@@ -53,7 +53,7 @@ func (r *Registration) ForgotPassword(ctx context.Context, emailAddr, captchaTok
 		return nil
 	}
 	r.log.InfoContext(ctx, "password reset link issued", "user_id", u.ID)
-	r.send(ctx, pmail.ResetMessage(email, u.Username, r.link("/reset-password", token)))
+	r.send(ctx, pmail.ResetMessage(r.cfg.SiteName, email, u.Username, r.link("/reset-password", token)))
 	return nil
 }
 
@@ -126,6 +126,6 @@ func (r *Registration) PasswordSetLink(ctx context.Context, p Principal) error {
 		return err
 	}
 	r.log.InfoContext(ctx, "set-password link issued", "user_id", u.ID)
-	r.send(ctx, pmail.ResetMessage(*u.Email, u.Username, r.link("/reset-password", token)))
+	r.send(ctx, pmail.ResetMessage(r.cfg.SiteName, *u.Email, u.Username, r.link("/reset-password", token)))
 	return nil
 }

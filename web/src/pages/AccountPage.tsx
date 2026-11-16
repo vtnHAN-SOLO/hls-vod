@@ -16,6 +16,9 @@ import {
 } from "../api/client";
 import { useAuth } from "../auth/AuthProvider";
 import { useAuthConfig } from "../auth/useAuthConfig";
+import { buttonClass } from "../components/ui/Button";
+import { UserIcon } from "../components/ui/Icons";
+import { Badge, Skeleton } from "../components/ui/Primitives";
 import { describeError } from "../lib/errors";
 import { describeGoogleError } from "../lib/google";
 import { checkPasswordChange, describePasswordChangeError } from "../lib/password";
@@ -27,8 +30,13 @@ const date = new Intl.DateTimeFormat(undefined, { dateStyle: "long" });
 
 export function AccountPage() {
   return (
-    <main className="mx-auto flex max-w-3xl flex-col gap-10 px-4 py-6 sm:px-6">
-      <h1 className="text-2xl font-semibold">Account</h1>
+    <main className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6">
+      <h1 className="flex items-center gap-3 text-3xl font-bold">
+        <span className="text-accent-soft">
+          <UserIcon size={28} />
+        </span>
+        Account
+      </h1>
       <Profile />
       <EmailSection />
       <GoogleSection />
@@ -41,7 +49,7 @@ export function AccountPage() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   const id = `account-${title.toLowerCase().replaceAll(" ", "-")}`;
   return (
-    <section aria-labelledby={id} className="flex flex-col gap-4">
+    <section aria-labelledby={id} className="flex flex-col gap-4 rounded-2xl border border-line bg-surface p-5 sm:p-6">
       <h2 id={id} className="text-lg font-semibold">
         {title}
       </h2>
@@ -55,16 +63,16 @@ function Profile() {
   return (
     <Section title="Profile">
       {me.isPending ? (
-        <div className="h-16 animate-pulse rounded-md bg-neutral-900" aria-label="Loading your account" />
+        <div aria-label="Loading your account"><Skeleton className="h-16" /></div>
       ) : me.isError ? (
-        <p className="text-sm text-red-300">{describeError(me.error)}</p>
+        <p className="text-sm text-danger">{describeError(me.error)}</p>
       ) : (
         <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
-          <dt className="text-neutral-400">Username</dt>
+          <dt className="text-fg-muted">Username</dt>
           <dd>{me.data.username}</dd>
-          <dt className="text-neutral-400">Role</dt>
-          <dd>{me.data.role === "admin" ? "Admin" : "User"}</dd>
-          <dt className="text-neutral-400">Member since</dt>
+          <dt className="text-fg-muted">Role</dt>
+          <dd>{me.data.role === "admin" ? <Badge tone="accent">Admin</Badge> : "User"}</dd>
+          <dt className="text-fg-muted">Member since</dt>
           <dd>
             <time dateTime={me.data.created_at}>{date.format(new Date(me.data.created_at))}</time>
           </dd>
@@ -74,7 +82,7 @@ function Profile() {
   );
 }
 
-const inputClass = "rounded-md border border-white/10 bg-neutral-900 px-3 py-2 outline-none focus:border-white/40";
+const inputClass = "field h-10";
 
 /** The address and whether it is confirmed, read-only: an account's email never changes. */
 function EmailSection() {
@@ -82,17 +90,17 @@ function EmailSection() {
   return (
     <Section title="Email">
       {me.isPending ? (
-        <div className="h-16 animate-pulse rounded-md bg-neutral-900" aria-label="Loading your email" />
+        <div aria-label="Loading your email"><Skeleton className="h-16" /></div>
       ) : me.isError ? (
-        <p className="text-sm text-red-300">{describeError(me.error)}</p>
+        <p className="text-sm text-danger">{describeError(me.error)}</p>
       ) : (
         <>
           <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 text-sm">
-            <dt className="text-neutral-400">Address</dt>
+            <dt className="text-fg-muted">Address</dt>
             <dd className="break-all">{me.data.email ?? "None"}</dd>
             {me.data.email !== null && (
               <>
-                <dt className="text-neutral-400">Status</dt>
+                <dt className="text-fg-muted">Status</dt>
                 <dd>
                   {me.data.email_verified_at === null ? (
                     "Not confirmed"
@@ -106,7 +114,7 @@ function EmailSection() {
               </>
             )}
           </dl>
-          <p className="text-sm text-neutral-400">
+          <p className="text-sm text-fg-muted">
             {me.data.email === null
               ? "This account was made by an admin and has no email, so a forgotten password cannot be reset by mail: ask the admin."
               : "Your email is fixed when you register: it is where password-reset links go."}
@@ -130,14 +138,14 @@ function PasswordSection() {
       {hasPassword && open ? (
         <PasswordForm />
       ) : setLink.isSuccess ? (
-        <p role="status" className="text-sm text-emerald-300">
+        <p role="status" className="text-sm text-success">
           Check your inbox: we mailed a link to set your password (it works for 30 minutes). Setting the password signs
           you out everywhere; then sign in again.
         </p>
       ) : (
         <>
           {!hasPassword && (
-            <p className="text-sm text-neutral-400">
+            <p className="text-sm text-fg-muted">
               You sign in with Google. Set a password to also sign in with your username.
             </p>
           )}
@@ -148,12 +156,12 @@ function PasswordSection() {
               if (hasPassword) setOpen(true);
               else setLink.mutate();
             }}
-            className="self-start rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20 disabled:opacity-50"
+            className={buttonClass("secondary", "sm", "self-start")}
           >
             {hasPassword ? "Change password" : setLink.isPending ? "Sending…" : "Set password"}
           </button>
           {setLink.isError && (
-            <p role="alert" className="text-sm text-red-300">
+            <p role="alert" className="text-sm text-danger">
               {describeError(setLink.error)}
             </p>
           )}
@@ -209,19 +217,19 @@ function GoogleSection() {
   return (
     <Section title="Google">
       {params.get("google") === "linked" && google !== null && (
-        <p role="status" className="text-sm text-emerald-300">
+        <p role="status" className="text-sm text-success">
           Google is connected: you can now sign in with it.
         </p>
       )}
       {googleError !== null && (
-        <p role="alert" className="text-sm text-red-300">
+        <p role="alert" className="text-sm text-danger">
           {googleError}
         </p>
       )}
       {google !== null ? (
         <>
           <p className="text-sm">
-            Google: connected{google.email_at_link !== null && <span className="text-neutral-400"> ({google.email_at_link})</span>}
+            Google: connected{google.email_at_link !== null && <span className="text-fg-muted"> ({google.email_at_link})</span>}
           </p>
           {me.data.has_password ? (
             <button
@@ -230,12 +238,12 @@ function GoogleSection() {
               onClick={() => {
                 remove.mutate();
               }}
-              className="self-start rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20 disabled:opacity-50"
+              className={buttonClass("secondary", "sm", "self-start")}
             >
               Remove Google
             </button>
           ) : (
-            <p className="text-sm text-neutral-400">Google is your only way to sign in: set a password before removing it.</p>
+            <p className="text-sm text-fg-muted">Google is your only way to sign in: set a password before removing it.</p>
           )}
         </>
       ) : !me.data.has_password ? null : connecting ? (
@@ -264,7 +272,7 @@ function GoogleSection() {
           <button
             type="submit"
             disabled={connect.isPending}
-            className="self-start rounded-md bg-white/90 px-4 py-2 text-sm font-medium text-neutral-900 hover:bg-white disabled:opacity-50"
+            className={buttonClass("primary", "md", "self-start")}
           >
             {connect.isPending ? "Going to Google…" : "Continue to Google"}
           </button>
@@ -275,13 +283,13 @@ function GoogleSection() {
           onClick={() => {
             setConnecting(true);
           }}
-          className="self-start rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20"
+          className={buttonClass("secondary", "sm", "self-start")}
         >
           Connect Google
         </button>
       )}
       {error && (
-        <p role="alert" className="text-sm text-red-300">
+        <p role="alert" className="text-sm text-danger">
           {error}
         </p>
       )}
@@ -344,19 +352,19 @@ function PasswordForm() {
         {field("New password", next, setNext, "new-password")}
         {field("Confirm new password", confirm, setConfirm, "new-password")}
         {error && (
-          <p role="alert" className="text-sm text-red-300">
+          <p role="alert" className="text-sm text-danger">
             {error}
           </p>
         )}
         {done && (
-          <p role="status" className="text-sm text-emerald-300">
+          <p role="status" className="text-sm text-success">
             Password changed. Other sessions were signed out.
           </p>
         )}
         <button
           type="submit"
           disabled={change.isPending}
-          className="self-start rounded-md bg-white/90 px-4 py-2 text-sm font-medium text-neutral-900 hover:bg-white disabled:opacity-50"
+          className={buttonClass("primary", "md", "self-start")}
         >
           {change.isPending ? "Changing…" : "Change password"}
         </button>
@@ -402,28 +410,26 @@ function Sessions() {
   const others = sessions.data?.items.filter((s) => !s.current).length ?? 0;
   return (
     <Section title="Sessions">
-      <p className="text-sm text-neutral-400">
+      <p className="text-sm text-fg-muted">
         Every browser logged in to your account. A signed-out device loses access at its next refresh, within 15
         minutes.
       </p>
       {sessions.isPending ? (
-        <div className="h-24 animate-pulse rounded-md bg-neutral-900" aria-label="Loading sessions" />
+        <div aria-label="Loading sessions"><Skeleton className="h-24" /></div>
       ) : sessions.isError ? (
-        <p className="text-sm text-red-300">{describeError(sessions.error)}</p>
+        <p className="text-sm text-danger">{describeError(sessions.error)}</p>
       ) : (
-        <ul className="flex flex-col divide-y divide-white/10 rounded-md border border-white/10">
+        <ul className="flex flex-col divide-y divide-line rounded-xl border border-line bg-raised">
           {sessions.data.items.map((s) => (
             <li key={s.id} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
               <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                 <span className="flex items-center gap-2 font-medium">
                   {s.user_agent}
                   {s.current && (
-                    <span className="rounded bg-emerald-400/15 px-1.5 py-0.5 text-xs font-medium text-emerald-300">
-                      This device
-                    </span>
+                    <Badge tone="success">This device</Badge>
                   )}
                 </span>
-                <span className="text-xs text-neutral-400">
+                <span className="text-xs text-fg-muted">
                   Signed in <time dateTime={s.created_at}>{dateTime.format(new Date(s.created_at))}</time> · last
                   active <time dateTime={s.last_used_at}>{dateTime.format(new Date(s.last_used_at))}</time>
                 </span>
@@ -434,7 +440,7 @@ function Sessions() {
                 onClick={() => {
                   revoke.mutate(s);
                 }}
-                className="rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20 disabled:opacity-50"
+                className={buttonClass("secondary", "sm")}
               >
                 {s.current ? "Sign out" : "Revoke"}
               </button>
@@ -443,7 +449,7 @@ function Sessions() {
         </ul>
       )}
       {error && (
-        <p role="alert" className="text-sm text-red-300">
+        <p role="alert" className="text-sm text-danger">
           {error}
         </p>
       )}
@@ -453,7 +459,7 @@ function Sessions() {
         onClick={() => {
           revokeOthers.mutate();
         }}
-        className="self-start rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40"
+        className={buttonClass("ghost", "sm", "self-start")}
       >
         Sign out everywhere else
       </button>

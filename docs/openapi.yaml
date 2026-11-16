@@ -83,13 +83,21 @@ info:
     email, and gets no reset mail; disabling revokes every session at
     once, and access tokens already issued run out within 15 minutes.
 
-    Media URLs (`playlist_url`, `thumbnails_url`, every `poster_url`) are
+    Media URLs (`playlist_url`, `thumbnails_url`, every `backdrop_url`) are
     signed: `/media/{token}/{expires}/{movie_id}/{file}` on media-delivery,
     which refuses a missing or wrong token (403) and an expired one (410).
     One token covers the movie's whole folder, so playlists, segments and
-    sprites resolved relative to a signed URL carry it too. Playback URLs
-    live at least 6 hours, poster URLs at least 24; responses that carry
-    them are `Cache-Control: no-store`.
+    sprites resolved relative to a signed URL carry it too. Poster URLs
+    (`poster.variants[].url`) are signed by the api itself and served by
+    `GET /api/v1/posters/...`. Playback URLs live at least 6 hours,
+    backdrop and poster URLs at least 24; responses that carry them are
+    `Cache-Control: no-store`.
+
+    Publishing: viewers (every non-admin) see only published movies, in
+    every list, the detail, the spotlight, most popular and continue
+    watching, and cannot play an unpublished one (404). A movie can be
+    published only when it is ready, has a poster and a non-empty overview;
+    the database enforces the rule. Admin endpoints see every movie.
 security:
   - bearerAuth: []
 paths:
@@ -160,11 +168,62 @@ paths:
         "405": { $ref: "#/components/responses/MethodNotAllowed" }
         "500": { $ref: "#/components/responses/Internal" }
 
+  /api/v1/movies/popular:
+    get:
+      operationId: listPopularMovies
+      summary: Ready movies ranked by how many people watched them
+      description: |
+        Ready movies ranked by the number of distinct users whose watch
+        progress in them was saved within the window, most first; ties by
+        id. A movie nobody watched in the window is not ranked, so the list
+        may be shorter than `limit`, or empty.
+      parameters:
+        - name: window
+          in: query
+          description: "`week` (the last 7 days), `month` (the last 30 days) or `all` (ever)."
+          schema: { type: string, enum: [week, month, all], default: week }
+        - name: limit
+          in: query
+          description: Values above 20 are rejected, not clamped.
+          schema: { type: integer, minimum: 1, maximum: 20, default: 10 }
+      responses:
+        "200":
+          description: The ranking, first place first.
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PopularList" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/movies/featured:
+    get:
+      operationId: listFeaturedMovies
+      summary: The movies the home page's spotlight rotates
+      description: |
+        The published movies an admin featured, newest featured first (at
+        most 10). With none featured, the 5 newest published movies, and
+        `featured` is false.
+      responses:
+        "200":
+          description: The spotlight's movies.
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeaturedList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+
   /api/v1/movies/{id}:
     get:
       operationId: getMovie
       summary: A movie with its renditions
-      description: For a non-admin, a movie that is not ready does not exist (404).
+      description: For a non-admin, a movie that is not published does not exist (404).
       parameters:
         - $ref: "#/components/parameters/MovieID"
       responses:
@@ -1046,6 +1105,265 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/MovieConflict" }
         "500": { $ref: "#/components/responses/Internal" }
+    patch:
+      operationId: adminEditMovie
+      summary: "Admin: edit a movie's title, year or overview"
+      description: |
+        A partial update: a field left out stays as it is; at least one
+        must be sent. `title`: 1 to 200 characters after trimming, no
+        control characters, never null. `year`: 1880 to 2100, or null to
+        clear it. `overview`: at most 2000 characters after trimming; null
+        or "" clears it, except on a published movie (409
+        `movie_published`: unpublish it first). Works in any status.
+      parameters:
+        - $ref: "#/components/parameters/MovieID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MovieEditRequest" }
+      responses:
+        "200":
+          description: The movie after the edit.
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminMovie" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/NotAdmin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`movie_published`: the overview of a published movie cannot be cleared."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/admin/movies/{id}/feature:
+    post:
+      operationId: adminFeatureMovie
+      summary: "Admin: feature a published movie in the home page's spotlight"
+      description: |
+        Only for a published movie: 409 `not_ready` when it is not ready,
+        `not_published` when it is ready but not published. Featuring a
+        movie again moves it to the front. Unpublishing it takes it out of
+        the spotlight.
+      parameters:
+        - $ref: "#/components/parameters/MovieID"
+      responses:
+        "204": { $ref: "#/components/responses/AdminDone" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/NotAdmin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`not_ready`: only a ready movie can be featured. `not_published`: publish it first."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: adminUnfeatureMovie
+      summary: "Admin: take a movie out of the spotlight"
+      description: Any status; a movie that is not featured stays so (204).
+      parameters:
+        - $ref: "#/components/parameters/MovieID"
+      responses:
+        "204": { $ref: "#/components/responses/AdminDone" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/NotAdmin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/admin/movies/{id}/publish:
+    post:
+      operationId: adminPublishMovie
+      summary: "Admin: make a movie visible to viewers"
+      description: |
+        Needs a ready movie with a poster and a non-empty overview, checked
+        in that order; else 409 with the reason as the code. Publishing a
+        published movie keeps its publish time (204).
+      parameters:
+        - $ref: "#/components/parameters/MovieID"
+      responses:
+        "204": { $ref: "#/components/responses/AdminDone" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/NotAdmin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: |
+            Why it cannot be published: `not_ready`, `missing_poster` or
+            `missing_overview`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: adminUnpublishMovie
+      summary: "Admin: hide a movie from viewers"
+      description: |
+        Any status. Also takes it out of the spotlight (featuring needs a
+        published movie). Unpublishing an unpublished movie is a 204 again.
+      parameters:
+        - $ref: "#/components/parameters/MovieID"
+      responses:
+        "204": { $ref: "#/components/responses/AdminDone" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/NotAdmin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/admin/movies/{id}/poster:
+    put:
+      operationId: adminUploadPoster
+      summary: "Admin: upload a movie's portrait poster"
+      description: |
+        The body is the image itself, at most 10 MB, any status. Its type
+        is read from the bytes (JPEG, PNG or WebP), never from a header or
+        a file name. At most 25 megapixels, read from the header before
+        anything is decoded; at least 300×450. The image is cropped to 2:3
+        from the centre and resized to widths 300, 600 and 1000 (widths
+        above the crop are skipped: never upscaled), each a JPEG at
+        quality 85. Re-encoding drops all metadata; EXIF orientation is not
+        applied. Replaces the previous poster, so its URLs change.
+      parameters:
+        - $ref: "#/components/parameters/MovieID"
+      requestBody:
+        required: true
+        content:
+          image/jpeg:
+            schema: { type: string, format: binary }
+          image/png:
+            schema: { type: string, format: binary }
+          image/webp:
+            schema: { type: string, format: binary }
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: The movie with its new poster.
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminMovie" }
+        "400":
+          description: |
+            `invalid_image`: not a JPEG, PNG or WebP, over 25 megapixels,
+            under 300×450, or undecodable. `invalid_request`: a bad id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/NotAdmin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413":
+          description: "`too_large`: the body is over 10 MB."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+    delete:
+      operationId: adminDeletePoster
+      summary: "Admin: remove a movie's poster"
+      description: |
+        Refused while the movie is published (409 `movie_published`): a
+        published movie must have a poster. No poster is a 204 too.
+      parameters:
+        - $ref: "#/components/parameters/MovieID"
+      responses:
+        "204": { $ref: "#/components/responses/AdminDone" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/NotAdmin" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`movie_published`: unpublish the movie first."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /api/v1/posters/{id}/{width}/{file}:
+    get:
+      operationId: getPoster
+      summary: One poster variant, by a signed URL
+      description: |
+        The URL comes from a movie's `poster.variants[].url`; it needs no
+        access token (an image tag cannot send one): the signature is the
+        permission. `sig` = base64url(HMAC-SHA256(k, "{id}/{width}/{hash}/{exp}")),
+        unpadded, where k is derived from the media signing key for this
+        purpose only. `{file}` is `{hash}.jpg`, the poster's SHA-256: a new
+        upload changes it, so the image never changes under a URL and is
+        cached as immutable until `exp`.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/MovieID"
+        - name: width
+          in: path
+          required: true
+          schema: { type: integer, enum: [300, 600, 1000] }
+        - name: file
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[0-9a-f]{64}\\.jpg$" }
+        - name: exp
+          in: query
+          required: true
+          description: Unix seconds; the URL stops working then.
+          schema: { type: integer, format: int64 }
+        - name: sig
+          in: query
+          required: true
+          schema: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
+        - name: If-None-Match
+          in: header
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: The JPEG.
+          headers:
+            Cache-Control:
+              description: private, max-age up to exp, immutable.
+              schema: { type: string, pattern: "^private, max-age=[0-9]+, immutable$" }
+            ETag:
+              description: The poster hash, quoted.
+              schema: { type: string }
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        "304":
+          description: If-None-Match matched the ETag. No body.
+          headers:
+            ETag:
+              schema: { type: string }
+        "403":
+          description: "`forbidden`: a missing, malformed or wrong signature."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: |
+            `not_found`: no such poster (any longer: a new upload changes
+            the hash), or a path no signed URL has.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: "`expired`: the URL was genuine but its time is up; fetch the movie again."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/Internal" }
 
 components:
   securitySchemes:
@@ -1224,6 +1542,11 @@ components:
       headers:
         Cache-Control:
           schema: { type: string, enum: [no-store] }
+    AdminDone:
+      description: Done. No body.
+      headers:
+        Cache-Control:
+          schema: { type: string, enum: [no-store] }
     Internal:
       description: Unexpected failure. Details are logged, never returned.
       content:
@@ -1327,12 +1650,25 @@ components:
     AdminMovie:
       type: object
       additionalProperties: false
-      required: [id, title, year, status, active_job, active_job_purpose, library_cleanup_after, created_at, updated_at]
+      required: [id, title, year, overview, status, featured_at, published_at, poster, backdrop_url, active_job, active_job_purpose, library_cleanup_after, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
         year: { type: integer, nullable: true }
+        overview: { type: string, nullable: true }
         status: { $ref: "#/components/schemas/MovieStatus" }
+        featured_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When an admin featured it in the spotlight; null when not featured.
+        published_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When an admin published it (visible to viewers); null while unpublished.
+        poster: { $ref: "#/components/schemas/Poster" }
+        backdrop_url: { $ref: "#/components/schemas/Movie/properties/backdrop_url" }
         active_job:
           type: string
           nullable: true
@@ -1369,7 +1705,7 @@ components:
     Movie:
       type: object
       additionalProperties: false
-      required: [id, title, year, tmdb_id, overview, runtime_sec, status, poster_url, created_at, updated_at]
+      required: [id, title, year, tmdb_id, overview, runtime_sec, status, backdrop_url, poster, top_height, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
@@ -1378,16 +1714,53 @@ components:
         overview: { type: string, nullable: true }
         runtime_sec: { type: integer, nullable: true }
         status: { $ref: "#/components/schemas/MovieStatus" }
-        poster_url:
+        top_height:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Height of the tallest rendition (the top quality); null with none.
+        backdrop_url:
           type: string
           nullable: true
           description: |
-            Signed path on media-delivery, valid for at least 24 hours:
+            The landscape video frame the transcoder wrote. Signed path on
+            media-delivery, valid for at least 24 hours:
             /media/{token}/{expires}/{id}/{version}/poster.jpg (movies
             published before versions: without the {version}/ folder).
           pattern: "^/media/[A-Za-z0-9_-]{22}/[0-9]+/[0-9a-f-]{36}/"
+        poster: { $ref: "#/components/schemas/Poster" }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    Poster:
+      type: object
+      nullable: true
+      additionalProperties: false
+      description: The uploaded portrait 2:3 poster; null when the movie has none.
+      required: [hash, variants]
+      properties:
+        hash:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: SHA-256 of the largest variant; a new upload changes it.
+        variants:
+          type: array
+          minItems: 1
+          maxItems: 3
+          description: Smallest first; no width above the cropped upload.
+          items: { $ref: "#/components/schemas/PosterVariant" }
+
+    PosterVariant:
+      type: object
+      additionalProperties: false
+      required: [width, height, url]
+      properties:
+        width: { type: integer, enum: [300, 600, 1000] }
+        height: { type: integer, enum: [450, 900, 1500] }
+        url:
+          type: string
+          description: Signed, valid for at least 24 hours.
+          pattern: "^/api/v1/posters/[0-9a-f-]{36}/[0-9]+/[0-9a-f]{64}\\.jpg\\?exp=[0-9]+&sig=[A-Za-z0-9_-]{43}$"
 
     MovieList:
       type: object
@@ -1411,7 +1784,7 @@ components:
         allOf cannot extend a schema that forbids additional properties.
       type: object
       additionalProperties: false
-      required: [id, title, year, tmdb_id, overview, runtime_sec, status, poster_url, created_at, updated_at, renditions]
+      required: [id, title, year, tmdb_id, overview, runtime_sec, status, backdrop_url, poster, top_height, created_at, updated_at, renditions, subtitle_languages]
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
@@ -1420,13 +1793,78 @@ components:
         overview: { type: string, nullable: true }
         runtime_sec: { type: integer, nullable: true }
         status: { $ref: "#/components/schemas/MovieStatus" }
-        poster_url: { $ref: "#/components/schemas/Movie/properties/poster_url" }
+        top_height: { $ref: "#/components/schemas/Movie/properties/top_height" }
+        backdrop_url: { $ref: "#/components/schemas/Movie/properties/backdrop_url" }
+        poster: { $ref: "#/components/schemas/Poster" }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         renditions:
           type: array
           description: HLS rungs, tallest first.
           items: { $ref: "#/components/schemas/Rendition" }
+        subtitle_languages:
+          type: array
+          description: |
+            The languages of the movie's subtitles (BCP 47, as in
+            SubtitleTrack.language), in stream order, each once; empty when
+            it has none.
+          items: { type: string, pattern: "^[a-z]{2,3}$" }
+
+    PopularList:
+      type: object
+      additionalProperties: false
+      required: [window, items]
+      properties:
+        window: { type: string, enum: [week, month, all] }
+        items:
+          type: array
+          maxItems: 20
+          items: { $ref: "#/components/schemas/PopularItem" }
+
+    PopularItem:
+      description: A Movie plus `viewers`, spelled out as MovieDetail is.
+      type: object
+      additionalProperties: false
+      required: [id, title, year, tmdb_id, overview, runtime_sec, status, backdrop_url, poster, top_height, created_at, updated_at, viewers]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        year: { type: integer, nullable: true }
+        tmdb_id: { type: integer, nullable: true }
+        overview: { type: string, nullable: true }
+        runtime_sec: { type: integer, nullable: true }
+        status: { $ref: "#/components/schemas/MovieStatus" }
+        top_height: { $ref: "#/components/schemas/Movie/properties/top_height" }
+        backdrop_url: { $ref: "#/components/schemas/Movie/properties/backdrop_url" }
+        poster: { $ref: "#/components/schemas/Poster" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        viewers:
+          type: integer
+          minimum: 1
+          description: Distinct users who saved progress in it within the window.
+
+    FeaturedList:
+      type: object
+      additionalProperties: false
+      required: [featured, items]
+      properties:
+        featured:
+          type: boolean
+          description: false when no movie is featured and the items are the newest ready movies instead.
+        items:
+          type: array
+          maxItems: 10
+          items: { $ref: "#/components/schemas/Movie" }
+
+    MovieEditRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        year: { type: integer, minimum: 1880, maximum: 2100, nullable: true }
+        overview: { type: string, maxLength: 2000, nullable: true }
 
     Rendition:
       type: object
@@ -1440,7 +1878,7 @@ components:
     Playback:
       type: object
       additionalProperties: false
-      required: [movie_id, playlist_url, thumbnails_url, resume_sec]
+      required: [movie_id, playlist_url, thumbnails_url, resume_sec, subtitles]
       properties:
         movie_id: { type: string, format: uuid }
         playlist_url:
@@ -1466,6 +1904,39 @@ components:
           description: |
             Where the caller stopped last time, in seconds; null when there
             is nothing to resume (no progress, or watched to 95% or more).
+        subtitles:
+          type: array
+          description: |
+            The subtitle tracks of the version the playlist points at, in the
+            source's stream order; empty when it has none.
+          items: { $ref: "#/components/schemas/SubtitleTrack" }
+
+    SubtitleTrack:
+      type: object
+      additionalProperties: false
+      required: [url, language, label]
+      properties:
+        url:
+          type: string
+          description: |
+            Signed WebVTT file on media-delivery, the same token and lifetime
+            as playlist_url (one token covers the movie's folder):
+            /media/{token}/{expires}/{movie_id}/{version}/subs/{n}_{lang}.vtt.
+            Same origin as the page, so a <track> element may load it.
+          pattern: "^/media/[A-Za-z0-9_-]{22}/[0-9]+/[0-9a-f-]{36}/([0-9a-f-]{36}/)?subs/[0-9]+_[a-z]{2,3}(_forced)?\\.vtt$"
+        language:
+          type: string
+          description: |
+            BCP 47 tag from the source's ISO 639 tag: the 2-letter code where
+            one exists ("eng" → "en"), else the 3-letter code; "und" when
+            unknown. For <track srclang> and for display names
+            (Intl.DisplayNames).
+          pattern: "^[a-z]{2,3}$"
+        label:
+          type: string
+          nullable: true
+          maxLength: 100
+          description: The stream's own title ("SDH", "Commentary"); null when it had none.
 
     ProgressRequest:
       type: object
@@ -1762,4 +2233,11 @@ components:
                 - last_admin
                 - not_failed
                 - job_active
+                - not_published
+                - movie_published
+                - missing_poster
+                - missing_overview
+                - invalid_image
+                - too_large
+                - expired
             message: { type: string }

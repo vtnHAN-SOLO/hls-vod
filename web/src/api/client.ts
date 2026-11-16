@@ -27,6 +27,11 @@ export type JobStatus = components["schemas"]["JobStatus"];
 export type JobPurpose = components["schemas"]["JobPurpose"];
 export type AdminMovie = components["schemas"]["AdminMovie"];
 export type AdminMovieList = components["schemas"]["AdminMovieList"];
+export type PopularList = components["schemas"]["PopularList"];
+export type PopularItem = components["schemas"]["PopularItem"];
+export type FeaturedList = components["schemas"]["FeaturedList"];
+export type MovieEditRequest = components["schemas"]["MovieEditRequest"];
+type PopularQuery = NonNullable<paths["/api/v1/movies/popular"]["get"]["parameters"]["query"]>;
 export type Role = components["schemas"]["RoleRequest"]["role"];
 type AdminUsersQuery = NonNullable<paths["/api/v1/admin/users"]["get"]["parameters"]["query"]>;
 type AdminJobsQuery = NonNullable<paths["/api/v1/admin/jobs"]["get"]["parameters"]["query"]>;
@@ -165,6 +170,16 @@ export function getPlayback(id: string): Promise<Playback> {
   return authed((headers) => api.GET("/api/v1/movies/{id}/playback", { params: { path: { id } }, headers }));
 }
 
+/** Ready movies ranked by distinct viewers in the window; only movies someone watched. */
+export function popularMovies(query: PopularQuery): Promise<PopularList> {
+  return authed((headers) => api.GET("/api/v1/movies/popular", { params: { query }, headers }));
+}
+
+/** The spotlight: featured movies, or the newest ready ones when none is featured. */
+export function featuredMovies(): Promise<FeaturedList> {
+  return authed((headers) => api.GET("/api/v1/movies/featured", { headers }));
+}
+
 export function continueWatching(): Promise<ContinueWatching> {
   return authed((headers) => api.GET("/api/v1/continue-watching", { headers }));
 }
@@ -276,6 +291,91 @@ export async function adminRetranscodeMovie(id: string): Promise<void> {
 /** Hidden from users at once; the watcher removes its files within 5 minutes. */
 export async function adminDeleteMovie(id: string): Promise<void> {
   await authed((headers) => api.DELETE("/api/v1/admin/movies/{id}", { params: { path: { id } }, headers }));
+}
+
+/** Edits title, year or overview; a field left out stays as it is. */
+export function adminEditMovie(id: string, body: MovieEditRequest): Promise<AdminMovie> {
+  return authed((headers) => api.PATCH("/api/v1/admin/movies/{id}", { params: { path: { id } }, body, headers }));
+}
+
+/** Features a ready movie in the home page's spotlight, or takes it out. */
+export async function adminSetFeatured(id: string, featured: boolean): Promise<void> {
+  const params = { path: { id } };
+  await authed((headers) =>
+    featured
+      ? api.POST("/api/v1/admin/movies/{id}/feature", { params, headers })
+      : api.DELETE("/api/v1/admin/movies/{id}/feature", { params, headers }),
+  );
+}
+
+/** Publishes a movie (409 with the reason when it lacks something), or unpublishes it. */
+export async function adminSetPublished(id: string, published: boolean): Promise<void> {
+  const params = { path: { id } };
+  await authed((headers) =>
+    published
+      ? api.POST("/api/v1/admin/movies/{id}/publish", { params, headers })
+      : api.DELETE("/api/v1/admin/movies/{id}/publish", { params, headers }),
+  );
+}
+
+/** Removes a movie's poster (refused while it is published). */
+export async function adminDeletePoster(id: string): Promise<void> {
+  await authed((headers) => api.DELETE("/api/v1/admin/movies/{id}/poster", { params: { path: { id } }, headers }));
+}
+
+type PosterUploadBody =
+  paths["/api/v1/admin/movies/{id}/poster"]["put"]["responses"]["200"]["content"]["application/json"];
+
+/**
+ * Uploads a poster image as the request body, reporting progress (0..1).
+ * XMLHttpRequest, not fetch: only it reports upload progress. It still goes
+ * through session.withAuth, so a 401 refreshes once and retries.
+ */
+export async function adminUploadPoster(id: string, file: Blob, onProgress?: (loaded: number, total: number) => void): Promise<AdminMovie> {
+  const path: keyof paths = "/api/v1/admin/movies/{id}/poster";
+  const url = path.replace("{id}", encodeURIComponent(id));
+  let r: { response: Response; text: string };
+  try {
+    r = await session.withAuth((token) => putWithProgress(url, token, file, onProgress));
+  } catch (e) {
+    throw asApiError(e);
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(r.text);
+  } catch {
+    throw new ApiError(r.response.status, "internal", "unexpected response");
+  }
+  if (!r.response.ok) {
+    const e = (body as components["schemas"]["Error"]).error;
+    throw new ApiError(r.response.status, e.code, e.message);
+  }
+  return body as PosterUploadBody;
+}
+
+function putWithProgress(
+  url: string,
+  token: string,
+  file: Blob,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<{ response: Response; text: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    // The api reads the type from the bytes; this only describes them.
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      resolve({ response: new Response(null, { status: xhr.status }), text: xhr.responseText });
+    };
+    xhr.onerror = () => {
+      reject(new Error("the upload failed: check the connection"));
+    };
+    xhr.send(file);
+  });
 }
 
 /**

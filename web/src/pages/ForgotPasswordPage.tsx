@@ -6,8 +6,9 @@ import { forgotPassword } from "../api/client";
 import { useAuthConfig } from "../auth/useAuthConfig";
 import { Turnstile } from "../components/Turnstile";
 import { describeSignupError, plausibleEmail } from "../lib/registration";
+import { AuthShell } from "../components/AuthShell";
 
-const inputClass = "rounded-md border border-white/10 bg-neutral-900 px-3 py-2 outline-none focus:border-white/40";
+const inputClass = "field h-10";
 
 /** "Forgot password?": an address and a challenge; the api answers alike for every address. */
 export function ForgotPasswordPage() {
@@ -31,22 +32,22 @@ export function ForgotPasswordPage() {
   });
 
   return (
-    <main className="mx-auto flex max-w-sm flex-col gap-6 px-4 py-16">
-      <h1 className="text-2xl font-semibold">Forgot password</h1>
+    <AuthShell>
+      <h1 className="text-2xl font-bold">Forgot password</h1>
       {send.isSuccess ? (
         <>
-          <p role="status" className="text-sm text-emerald-300">
+          <p role="status" className="text-sm text-success">
             If the address has an account, a mail is on its way. Its link works once, for 30 minutes. The mail also
             names your username.
           </p>
-          <Link to="/login" className="text-sm underline hover:text-white/80">
+          <Link to="/login" className="text-sm underline hover:text-fg">
             Back to log in
           </Link>
         </>
       ) : config.isPending ? (
-        <div className="h-24 animate-pulse rounded-md bg-neutral-900" aria-label="Loading" />
+        <div className="h-24 animate-pulse rounded-md bg-surface" aria-label="Loading" />
       ) : siteKey === null ? (
-        <p className="text-sm text-neutral-400">Password reset is unavailable right now. Try again later.</p>
+        <p className="text-sm text-fg-muted">Password reset is unavailable right now. Try again later.</p>
       ) : (
         <form
           noValidate
@@ -59,7 +60,7 @@ export function ForgotPasswordPage() {
             else send.mutate();
           }}
         >
-          <p className="text-sm text-neutral-300">Enter the email address of your account. We mail you a link to choose a new password.</p>
+          <p className="text-sm text-fg-muted">Enter the email address of your account. We mail you a link to choose a new password.</p>
           <label className="flex flex-col gap-1 text-sm">
             Email address
             <input
@@ -74,19 +75,19 @@ export function ForgotPasswordPage() {
           </label>
           <Turnstile key={attempt} siteKey={siteKey} onToken={setToken} />
           {error && (
-            <p role="alert" className="text-sm text-red-300">
+            <p role="alert" className="text-sm text-danger">
               {error}
             </p>
           )}
           <button
             type="submit"
             disabled={send.isPending}
-            className="rounded-md bg-white/90 px-3 py-2 font-medium text-neutral-900 hover:bg-white disabled:opacity-50"
+            className="inline-flex h-10 items-center justify-center rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition-colors duration-150 hover:bg-accent-hover disabled:opacity-50"
           >
             {send.isPending ? "Sending…" : "Send reset link"}
           </button>
         </form>
       )}
-    </main>
+    </AuthShell>
   );
 }

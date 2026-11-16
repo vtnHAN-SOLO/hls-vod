@@ -5,7 +5,7 @@ import { resendVerification } from "../api/client";
 import { describeSignupError, plausibleEmail } from "../lib/registration";
 import { Turnstile } from "./Turnstile";
 
-const inputClass = "rounded-md border border-white/10 bg-neutral-900 px-3 py-2 outline-none focus:border-white/40";
+const inputClass = "field h-10";
 
 /** "Resend email": the address, a challenge, and the api's one answer. */
 export function ResendVerification({ siteKey, initialEmail = "" }: { siteKey: string | null; initialEmail?: string }) {
@@ -27,7 +27,7 @@ export function ResendVerification({ siteKey, initialEmail = "" }: { siteKey: st
   });
 
   if (siteKey === null) {
-    return <p className="text-sm text-neutral-400">Resending is unavailable right now. Try again later.</p>;
+    return <p className="text-sm text-fg-muted">Resending is unavailable right now. Try again later.</p>;
   }
   return (
     <form
@@ -56,12 +56,12 @@ export function ResendVerification({ siteKey, initialEmail = "" }: { siteKey: st
       </label>
       <Turnstile key={attempt} siteKey={siteKey} onToken={setToken} />
       {error && (
-        <p role="alert" className="text-sm text-red-300">
+        <p role="alert" className="text-sm text-danger">
           {error}
         </p>
       )}
       {resend.isSuccess && (
-        <p role="status" className="text-sm text-emerald-300">
+        <p role="status" className="text-sm text-success">
           If that address has an account waiting, a new mail is on its way. The link still expires 24 hours after you
           signed up.
         </p>
@@ -69,7 +69,7 @@ export function ResendVerification({ siteKey, initialEmail = "" }: { siteKey: st
       <button
         type="submit"
         disabled={resend.isPending}
-        className="self-start rounded-md bg-white/10 px-3 py-1.5 text-sm hover:bg-white/20 disabled:opacity-50"
+        className="self-start rounded-md bg-overlay px-3 py-1.5 text-sm hover:bg-overlay-hover disabled:opacity-50"
       >
         {resend.isPending ? "Sending…" : "Resend email"}
       </button>

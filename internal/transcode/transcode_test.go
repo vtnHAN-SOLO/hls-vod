@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -95,6 +96,9 @@ func TestTranscode(t *testing.T) {
 		t.Fatalf("transcode: %v\nlogs:\n%s", err, logs.String())
 	}
 	assertResult(t, res, output)
+	if want := []Subtitle{{Path: "subs/0_eng.vtt", Language: "eng", Position: 0}}; !slices.Equal(res.Subtitles, want) {
+		t.Errorf("subtitles = %+v, want %+v", res.Subtitles, want)
+	}
 
 	for _, f := range []string{
 		medialayout.MasterPlaylist,
@@ -163,8 +167,13 @@ func TestTranscodeSurvivesBrokenSubtitle(t *testing.T) {
 		p.Subtitles = append(p.Subtitles, ffmpeg.SubtitleStream{Index: 99, Codec: "subrip", Language: "fre"})
 	}
 	var logs syncBuffer
-	if _, err := Run(t.Context(), jsonLogger(&logs), opt); err != nil {
+	res, err := Run(t.Context(), jsonLogger(&logs), opt)
+	if err != nil {
 		t.Fatalf("a broken subtitle failed the movie: %v", err)
+	}
+	// Only the track that was written is recorded.
+	if len(res.Subtitles) != 1 || res.Subtitles[0].Path != "subs/0_eng.vtt" {
+		t.Errorf("subtitles = %+v, want only subs/0_eng.vtt", res.Subtitles)
 	}
 	if _, err := os.Stat(filepath.Join(output, "subs/0_eng.vtt")); err != nil {
 		t.Errorf("good subtitle missing: %v", err)

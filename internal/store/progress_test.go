@@ -42,6 +42,9 @@ func TestWatchProgress(t *testing.T) {
 			title, "sources/"+title+".mkv", string(status), runtime, at).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
+		if status == model.StatusReady {
+			db.Publish(ctx, t, id)
+		}
 		return id
 	}
 	runtime := 1000
@@ -119,7 +122,7 @@ func TestWatchProgress(t *testing.T) {
 			t.Fatalf("continue watching after a save = %v", got)
 		}
 		// A movie that stops being ready (retranscode) leaves the row.
-		if _, err := db.Pool.Exec(ctx, `UPDATE movies SET status = 'processing' WHERE id = $1`, first); err != nil {
+		if _, err := db.Pool.Exec(ctx, `UPDATE movies SET status = 'processing', published_at = NULL WHERE id = $1`, first); err != nil {
 			t.Fatal(err)
 		}
 		if got := cw(t, alice.ID); fmt.Sprint(got) != "[no-runtime@99999]" {
@@ -128,6 +131,7 @@ func TestWatchProgress(t *testing.T) {
 		if _, err := db.Pool.Exec(ctx, `UPDATE movies SET status = 'ready' WHERE id = $1`, first); err != nil {
 			t.Fatal(err)
 		}
+		db.Publish(ctx, t, first)
 		if ps, err := st.ContinueWatching(ctx, alice.ID, 95, 1); err != nil || len(ps) != 1 {
 			t.Fatalf("limit 1 = %d rows, %v", len(ps), err)
 		}

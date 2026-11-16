@@ -82,7 +82,7 @@ sequenceDiagram
     U->>W: open /watch/{id}
     W->>A: GET /api/v1/movies/{id}/playback
     A->>A: MediaSigner: token = base64url(md5("{expires}/{id} {key}")), 6 h
-    A-->>W: /media/{token}/{expires}/{id}/{version}/master.m3u8 + resume_sec
+    A-->>W: /media/{token}/{expires}/{id}/{version}/master.m3u8 + resume_sec + subtitle URLs
     W->>N: master.m3u8, then rung playlists and segments (relative URLs keep the token)
     N->>N: secure_link_md5 with the shared key, no call to the api
     N-->>W: 200, Cache-Control private
@@ -96,13 +96,86 @@ sequenceDiagram
     W-->>U: playback continues where it was, playing if it was playing
 ```
 
+- **Subtitles** are `<track>` elements on the same origin, signed with the playlist's token; only
+  the one chosen is enabled, so a movie with dozens of tracks fetches one.
+- **Feedback.** Skips (buttons, ←/→, a double tap on a side third) show a bubble that adds up
+  within 600 ms ("5s", "10s"); ↑/↓ show the volume; the viewer's volume, speed and subtitle
+  choice are remembered in the browser.
 - **403 vs 410.** A wrong, tampered or malformed token is 403 and is never retried; only 410
   (a valid token that has expired) triggers a renewal.
 - **One token per movie folder.** The token covers `library/{id}/`, so it also covers every
   version folder in it, and hls.js's relative URLs inherit it from the path.
-- **Posters.** A poster that fails to load makes its page refetch its data once, to pick up
-  fresh signed URLs.
+- **Images.** A poster or backdrop that fails to load makes its page refetch its data once,
+  to pick up fresh signed URLs.
 - See [ADR 0003](decisions/0003-signed-urls-stateless-delivery.md).
+
+## Upload a poster and publish
+
+```mermaid
+sequenceDiagram
+    actor Ad as Admin
+    participant W as web
+    participant A as api
+    participant P as Postgres
+    actor V as Viewer
+    Ad->>W: Edit, drop an image
+    W->>W: checks type, 10 MB, 300x450, previews the 2:3 crop
+    W->>A: PUT /api/v1/admin/movies/{id}/poster (the bytes, with progress)
+    A->>P: admin, live session, not disabled
+    A->>A: type from the bytes, size from the header (max 25 MP)
+    A->>A: one at a time: crop 2:3, resize 300/600/1000, JPEG 85
+    A->>P: one tx: replace movie_posters rows, set poster_hash
+    A-->>W: the movie with its poster URLs
+    Ad->>W: write the description, Save and publish
+    W->>A: PATCH the overview, then POST /publish
+    A->>P: ready, poster, overview? set published_at
+    Note over A,P: the CHECK on movies refuses an incomplete publish anyway
+    V->>W: Home, Browse, the detail page
+    W->>A: GET /api/v1/movies ...
+    A-->>W: published movies only, poster URLs signed for 24 h
+    W->>A: GET /api/v1/posters/{id}/{width}/{hash}.jpg?exp&sig
+    A-->>W: JPEG, private, immutable until exp
+```
+
+- **Refusals.** Publishing says why it cannot (`not_ready`, `missing_poster`,
+  `missing_overview`); the admin page shows the same reasons as badges before anyone clicks. A
+  published movie's poster cannot be removed nor its overview cleared: unpublish first.
+- **A new upload** changes the hash and so every poster URL; an old URL then answers 404.
+- **Signatures.** A wrong or missing signature is 403, an expired one 410, as on media-delivery.
+
+## Open the home page
+
+```mermaid
+sequenceDiagram
+    actor U as Viewer
+    participant W as web
+    participant A as api
+    participant P as Postgres
+    participant N as media-delivery
+    U->>W: open /
+    par one request each, in parallel
+        W->>A: GET /api/v1/movies/featured
+        A->>P: featured published movies, newest featured first
+        Note over A,P: none featured: the 5 newest published movies instead
+    and
+        W->>A: GET /api/v1/continue-watching
+    and
+        W->>A: GET /api/v1/movies/popular?window=week
+        A->>P: progress rows saved in the last 7 days, per movie, published only
+    and
+        W->>A: GET /api/v1/movies?sort=added_desc
+    end
+    A-->>W: movies with top_height, a signed backdrop URL and signed poster variant URLs (24 h)
+    W->>N: backdrops (the spotlight, continue watching)
+    W->>A: poster variants (the cards, the spotlight), the size srcset picks
+    A->>P: one variant's bytes, while the hash in the URL is the movie's
+    W-->>U: spotlight (advances every 8 s, never with reduced motion), rows, ranking
+```
+
+- **Resume in the spotlight.** The Play button says "Resume 23:10" when the Continue Watching data
+  has a position for that movie; no extra request.
+- **Most popular counts people, not plays.** One row per (user, movie) in `watch_progress`, so a
+  viewer who watches every night counts once. Tabs switch the window: week, month, all time.
 
 ## Ingest a new movie
 

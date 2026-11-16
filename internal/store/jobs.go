@@ -241,7 +241,7 @@ func (s *Store) StartTranscode(ctx context.Context, movieID string) (TranscodeJo
 
 // FinishTranscode records a successful transcode in one transaction: the
 // job succeeded with finished_at, the renditions, and the movie's
-// library_path, poster_path and runtime. ErrJobNotRunning, with nothing
+// library_path, backdrop_path and runtime. ErrJobNotRunning, with nothing
 // written, if the job is no longer running.
 //
 // Ingest: the movie processing → ready. Retranscode: the movie must still
@@ -263,10 +263,10 @@ func (s *Store) FinishTranscode(ctx context.Context, t TranscodeJob, p Published
 		}
 		if t.Purpose == model.PurposeRetranscode {
 			tag, err = tx.Exec(ctx, `
-				UPDATE movies SET library_path = $2, poster_path = $3, runtime_sec = $4,
+				UPDATE movies SET library_path = $2, backdrop_path = $3, runtime_sec = $4,
 				    library_cleanup_after = now() + make_interval(secs => $5)
 				WHERE id = $1 AND status = 'ready'`,
-				t.MovieID, p.LibraryPath, p.PosterPath, p.RuntimeSec, p.OldVersionGrace.Seconds())
+				t.MovieID, p.LibraryPath, p.BackdropPath, p.RuntimeSec, p.OldVersionGrace.Seconds())
 			if err != nil {
 				return fmt.Errorf("switching the movie to its new version: %w", err)
 			}
@@ -276,14 +276,21 @@ func (s *Store) FinishTranscode(ctx context.Context, t TranscodeJob, p Published
 			if _, err := tx.Exec(ctx, `DELETE FROM renditions WHERE movie_id = $1`, t.MovieID); err != nil {
 				return fmt.Errorf("removing the old renditions: %w", err)
 			}
+			if err := replaceSubtitles(ctx, tx, t.MovieID, p.Subtitles); err != nil {
+				return err
+			}
 			return insertRenditions(ctx, tx, t.MovieID, p.Renditions)
 		}
 		if err := insertRenditions(ctx, tx, t.MovieID, p.Renditions); err != nil {
 			return err
 		}
+		// A retried ingest may follow a version the backfill described.
+		if err := replaceSubtitles(ctx, tx, t.MovieID, p.Subtitles); err != nil {
+			return err
+		}
 		tag, err = tx.Exec(ctx, `
-			UPDATE movies SET status = 'ready', library_path = $2, poster_path = $3, runtime_sec = $4
-			WHERE id = $1 AND status = 'processing'`, t.MovieID, p.LibraryPath, p.PosterPath, p.RuntimeSec)
+			UPDATE movies SET status = 'ready', library_path = $2, backdrop_path = $3, runtime_sec = $4
+			WHERE id = $1 AND status = 'processing'`, t.MovieID, p.LibraryPath, p.BackdropPath, p.RuntimeSec)
 		if err != nil {
 			return fmt.Errorf("marking movie ready: %w", err)
 		}

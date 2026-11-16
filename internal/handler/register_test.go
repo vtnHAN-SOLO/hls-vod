@@ -295,7 +295,7 @@ func newRegEnv(t *testing.T, cfg regSetup) *regEnv {
 	}
 	signup := service.NewRegistration(e.rs, f.hasher, captcha, e.mailer, a,
 		service.RegistrationConfig{Open: !cfg.closed, BaseURL: testBaseURL, TurnstileSiteKey: siteKey}, logger)
-	e.srv = httptest.NewServer(NewRouter(logger, prometheus.NewRegistry(), &fakePinger{}, service.NewCatalog(&fakeStore{}, f.media), a, signup,
+	e.srv = httptest.NewServer(NewRouter(logger, prometheus.NewRegistry(), &fakePinger{}, service.NewCatalog(&fakeStore{}, &fakeStore{}, f.media), a, signup,
 		Options{SecureCookies: true, Google: cfg.google}))
 	t.Cleanup(e.srv.Close)
 	return e

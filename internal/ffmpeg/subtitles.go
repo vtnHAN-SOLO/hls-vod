@@ -29,7 +29,8 @@ var imageSubtitleCodecs = map[string]bool{
 // SubtitleTrack is one WebVTT file that was written.
 type SubtitleTrack struct {
 	SubtitleStream
-	Path string // relative to the movie dir, e.g. "subs/0_eng.vtt"
+	Path     string // relative to the movie dir, e.g. "subs/0_eng.vtt"
+	Position int    // the n in the name: its place among the source's subtitle streams
 }
 
 // SkippedSubtitle is a subtitle stream that could not become WebVTT.
@@ -56,7 +57,7 @@ func ExtractSubtitles(ctx context.Context, input, movieDir string, src ProbeResu
 	for i, s := range src.Subtitles {
 		switch {
 		case textSubtitleCodecs[s.Codec]:
-			todo = append(todo, SubtitleTrack{SubtitleStream: s, Path: subtitlePath(i, s)})
+			todo = append(todo, SubtitleTrack{SubtitleStream: s, Path: subtitlePath(i, s), Position: i})
 		case imageSubtitleCodecs[s.Codec]:
 			res.Skipped = append(res.Skipped, SkippedSubtitle{SubtitleStream: s, Reason: "image-based subtitles cannot be converted to WebVTT"})
 		default:
@@ -138,14 +139,40 @@ func convertSubtitles(ctx context.Context, input, movieDir string, tracks []Subt
 // subtitlePath names the n-th subtitle stream. The language tag comes from
 // the file's metadata, so only a plain ISO 639 code is used in the name.
 func subtitlePath(n int, s SubtitleStream) string {
-	name := strconv.Itoa(n) + "_" + languageTag(s.Language)
+	name := strconv.Itoa(n) + "_" + LanguageTag(s.Language)
 	if s.Forced {
 		name += "_forced"
 	}
 	return path.Join(SubtitlesDir, name+".vtt")
 }
 
-func languageTag(lang string) string {
+// ParseSubtitleName reads back what subtitlePath wrote: "{n}_{lang}.vtt"
+// or "{n}_{lang}_forced.vtt". ok is false for any other name.
+func ParseSubtitleName(name string) (position int, lang string, forced, ok bool) {
+	base, found := strings.CutSuffix(name, ".vtt")
+	if !found {
+		return 0, "", false, false
+	}
+	base, forced = strings.CutSuffix(base, "_forced")
+	num, lang, found := strings.Cut(base, "_")
+	if !found || num == "" || len(num) > 4 || LanguageTag(lang) != lang {
+		return 0, "", false, false
+	}
+	for _, r := range num {
+		if r < '0' || r > '9' {
+			return 0, "", false, false
+		}
+	}
+	position, err := strconv.Atoi(num)
+	if err != nil || strconv.Itoa(position) != num {
+		return 0, "", false, false
+	}
+	return position, lang, forced, true
+}
+
+// LanguageTag is lang as a file name and database value: a plain lowercase
+// ISO 639 code of 2 or 3 letters, "und" (undetermined) for anything else.
+func LanguageTag(lang string) string {
 	lang = strings.ToLower(lang)
 	if len(lang) < 2 || len(lang) > 3 {
 		return "und"

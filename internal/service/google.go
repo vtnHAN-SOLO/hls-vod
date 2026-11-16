@@ -93,6 +93,8 @@ type GoogleConfig struct {
 	BaseURL string
 	// RegistrationOpen: a sign-in that needs a new account is refused when false.
 	RegistrationOpen bool
+	// SiteName names the product in mails (SITE_NAME); "" is the default name.
+	SiteName string
 }
 
 // Google runs sign in with Google and linking.
@@ -338,7 +340,7 @@ func (g *Google) login(ctx context.Context, id googleID, userAgent string) (Call
 	}
 	g.log.InfoContext(ctx, "Google sign-in", "user_id", r.User.ID, "outcome", r.Outcome.String())
 	if r.Outcome == store.GoogleLinkedByEmail && r.User.Email != nil {
-		sendMail(ctx, g.mailer, g.log, pmail.GoogleLinkedMessage(*r.User.Email, r.User.Username, g.cfg.BaseURL+"/account"))
+		sendMail(ctx, g.mailer, g.log, pmail.GoogleLinkedMessage(g.cfg.SiteName, *r.User.Email, r.User.Username, g.cfg.BaseURL+"/account"))
 	}
 	s, err := g.auth.session(r.User, r.Family, refresh)
 	if err != nil {
@@ -363,7 +365,7 @@ func (g *Google) link(ctx context.Context, userID string, id googleID) (Callback
 	}
 	g.log.InfoContext(ctx, "Google account linked", "user_id", userID)
 	if u, err := g.auth.store.UserByID(ctx, userID); err == nil && u.Email != nil {
-		sendMail(ctx, g.mailer, g.log, pmail.GoogleLinkedMessage(*u.Email, u.Username, g.cfg.BaseURL+"/account"))
+		sendMail(ctx, g.mailer, g.log, pmail.GoogleLinkedMessage(g.cfg.SiteName, *u.Email, u.Username, g.cfg.BaseURL+"/account"))
 	}
 	return CallbackResult{Intent: store.IntentLink}, nil
 }

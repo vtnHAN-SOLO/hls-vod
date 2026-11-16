@@ -26,6 +26,11 @@ export function canRetranscode(m: AdminMovie): boolean {
   return m.status === "ready" && m.active_job === null;
 }
 
+/** Only a published movie can be featured in the spotlight; unfeaturing works in any status. */
+export function canFeature(m: AdminMovie): boolean {
+  return m.status === "ready" && m.published_at !== null && m.featured_at === null;
+}
+
 /** "retranscoding" while a retranscode job is queued or running, else null. */
 export function retranscodeNote(m: AdminMovie): string | null {
   if (m.active_job_purpose !== "retranscode") return null;
@@ -103,6 +108,21 @@ export function describeAdminError(err: unknown): string {
         return "Only admins can do this. Your admin role may have been removed.";
       case "not_found":
         return "It no longer exists. The list was out of date.";
+      case "not_ready":
+        return "It is not ready to play yet.";
+      case "not_published":
+        return "Publish the movie before featuring it.";
+      case "movie_published":
+        return "The movie is published. Unpublish it first.";
+      case "missing_poster":
+        return "Upload a poster before publishing.";
+      case "missing_overview":
+        return "Write a description before publishing.";
+      case "too_large":
+        return "The image is larger than 10 MB.";
+      case "invalid_image":
+        // The api's own sentence: which rule the image broke.
+        return `${err.message.charAt(0).toUpperCase()}${err.message.slice(1)}.`;
       default:
         break;
     }

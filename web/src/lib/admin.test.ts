@@ -4,6 +4,7 @@ import { type AdminMovie, type AdminUser, ApiError, type Job } from "../api/clie
 import {
   actionLabel,
   canDelete,
+  canFeature,
   canRetranscode,
   canRetry,
   confirmDelete,
@@ -23,7 +24,12 @@ function movie(over: Partial<AdminMovie>): AdminMovie {
     id: "m",
     title: "Night Train",
     year: 2020,
+    overview: null,
     status: "ready",
+    featured_at: null,
+    published_at: null,
+    poster: null,
+    backdrop_url: null,
     active_job: null,
     active_job_purpose: null,
     library_cleanup_after: null,
@@ -140,7 +146,31 @@ describe("describeAdminError", () => {
     ["job_active", "This movie has a queued or running transcode job. Wait for it to finish."],
     ["forbidden", "Only admins can do this. Your admin role may have been removed."],
     ["internal", "The server had a problem. Try again in a moment."],
+    ["not_published", "Publish the movie before featuring it."],
+    ["movie_published", "The movie is published. Unpublish it first."],
+    ["missing_poster", "Upload a poster before publishing."],
+    ["missing_overview", "Write a description before publishing."],
+    ["too_large", "The image is larger than 10 MB."],
   ] as const)("%s", (code, want) => {
     expect(describeAdminError(new ApiError(409, code, "x"))).toBe(want);
+  });
+});
+
+describe("describeAdminError: invalid_image", () => {
+  it("passes on the api's own sentence: which rule the image broke", () => {
+    expect(describeAdminError(new ApiError(400, "invalid_image", "the image must be at least 300×450 pixels"))).toBe(
+      "The image must be at least 300×450 pixels.",
+    );
+  });
+});
+
+describe("canFeature", () => {
+  it("features only a published movie that is not featured yet", () => {
+    expect(canFeature(movie({ published_at: at }))).toBe(true);
+    expect(canFeature(movie({}))).toBe(false); // ready, not published
+    expect(canFeature(movie({ published_at: at, featured_at: at }))).toBe(false);
+    for (const status of ["pending", "processing", "failed", "deleting"] as const) {
+      expect(canFeature(movie({ status }))).toBe(false);
+    }
   });
 });

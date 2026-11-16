@@ -1,11 +1,17 @@
 <!doctype html>
-<html lang="en" class="h-full bg-neutral-950">
+<html lang="en" class="h-full">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>HLS VOD</title>
+    <title>%VITE_BRAND_NAME%</title>
+    <!-- Same-origin files from web/public. Colours: --color-bg in src/index.css. -->
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/logo-32.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/logo-192.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#09090d" />
   </head>
-  <body class="h-full text-neutral-100 antialiased">
+  <body class="h-full bg-bg font-sans text-fg antialiased">
     <div id="root" class="h-full"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -74,6 +74,8 @@ idiomatic. Keep dependencies minimal — prefer stdlib where it's reasonable.
 | Router | React Router |
 | API client | **openapi-typescript** + **openapi-fetch** — types generated from `docs/openapi.yaml` with no runtime codegen; a ~6 kB fetch wrapper typed by them, so a spec change breaks typecheck |
 | Testing | **vitest** — runs on the Vite config already there; unit tests for pure logic in `src/lib` |
+| Design | Tokens in `src/index.css` (`@theme`: surfaces, text levels, one violet accent, states, fonts, motion); Tailwind's default palette is switched off. Shared components in `src/components/ui/` (Button, Badge, Card, Row, Tabs, Menu, Dialog, Skeleton, EmptyState, Icons, Wordmark) |
+| Fonts | Self-hosted `@fontsource-variable/inter` (text) and `@fontsource-variable/sora` (headings), bundled by Vite: no font CDN |
 
 The frontend is a thin client over the API. Don't over-engineer it.
 
@@ -101,12 +103,12 @@ browser ──► media-delivery                    │  └──── dispatc
 
 | Service | Language | Replicas | Purpose |
 |---|---|---|---|
-| `api` | Go | 2 | Catalog, login / refresh / logout (JWT access token + rotating refresh cookie); open registration with email verification (Turnstile, mail through Resend); forgot / reset password; sign in with Google (OIDC); watch progress (save, continue-watching, resume position); the caller's account (password change or set, Google link, sessions); the admin area (users, jobs, retry and delete of movies; the role checked in the database on every call). Never touches files, no Kubernetes permissions |
+| `api` | Go | 2 | Catalog, login / refresh / logout (JWT access token + rotating refresh cookie); open registration with email verification (Turnstile, mail through Resend); forgot / reset password; sign in with Google (OIDC); signed subtitle tracks with playback; watch progress (save, continue-watching, resume position); browsing (most popular by distinct viewers, the featured spotlight); posters (admin upload, processed and stored in Postgres, served from there by signed URLs) and publishing (viewers see published movies only); the caller's account (password change or set, Google link, sessions); the admin area (users, jobs, retry, delete, retranscode, edit, poster, publish and feature of movies; the role checked in the database on every call). Never touches files, no Kubernetes permissions |
 | `web` | React (static) | 2 | SPA, served by nginx |
-| `media-delivery` | nginx conf only | 2-5 HPA | Serves HLS segments, posters and thumbnails from NFS, read-only, only to URLs the api signed (secure_link, shared `MEDIA_SIGNING_KEY`) |
+| `media-delivery` | nginx conf only | 2-5 HPA | Serves HLS segments, backdrops and thumbnails from NFS, read-only, only to URLs the api signed (secure_link, shared `MEDIA_SIGNING_KEY`) |
 | `dispatcher` | Go | 1-2 | Starts the transcoder for queued jobs (`DISPATCH_BACKEND` local or kubernetes), at most `MAX_CONCURRENT` at once; reconciles running jobs; the only component that may create Jobs |
 | `transcoder` | Go + ffmpeg | 0-1 Job | Ingest pipeline: `--movie-id` job mode records its own result |
-| `watcher` | Go | CronJob /5min | One run, in order: purge (removes the movies admins deleted: `library/{id}/`, the source, then the row), cleanup (versions a retranscode replaced, once their URLs have expired), prune (auth rows no longer in use, bounded batches), reconcile (orphaned sources back to `inbox/`), claim (`inbox/` files into `sources/`, jobs queued in Postgres) |
+| `watcher` | Go | CronJob /5min | One run, in order: purge (removes the movies admins deleted: `library/{id}/`, the source, then the row), cleanup (versions a retranscode replaced, once their URLs have expired), subtitles (rows for movies published before subtitle_tracks), prune (auth rows no longer in use, bounded batches), reconcile (orphaned sources back to `inbox/`), claim (`inbox/` files into `sources/`, jobs queued in Postgres) |
 
 ### Media flow
 
@@ -119,9 +121,11 @@ inbox/My Movie (2020).mkv
                 running) → job running → K8s Job / local child `transcoder --movie-id {id}`
   → transcoder: movie processing → ffprobe → top rung at source height (remux, copy video +
                 AAC, or encode, as ffprobe allows) → encode lower rungs
-                → poster + thumbnail sprite → subtitles → library/{id}/{version}/ (version =
-                  the job id; written in .{version}.partial-*, then one atomic rename)
-                → one tx: renditions + movie ready + job succeeded (or both failed + error)
+                → poster + thumbnail sprite → subtitles (text streams → subs/{n}_{lang}.vtt)
+                → library/{id}/{version}/ (version = the job id; written in
+                  .{version}.partial-*, then one atomic rename)
+                → one tx: renditions + subtitle_tracks + movie ready + job succeeded (or both
+                  failed + error)
   → dispatcher reconciles: exited without a result / gone / past the 6h deadline → failed
   → library/{id}/{version}/master.m3u8 served by media-delivery at
     /media/{token}/{expires}/{id}/{version}/master.m3u8 (one token covers library/{id}/)
@@ -131,7 +135,7 @@ Movies published before versioned folders have their files directly in library/{
 
 admin retranscodes a ready movie → job queued with purpose retranscode; the movie STAYS ready
   → transcoder: free space ≥ 1.5 × the current version (else failed, nothing written)
-    → library/{id}/{new version}/ → one tx: library_path, poster_path, renditions, runtime
+    → library/{id}/{new version}/ → one tx: library_path, backdrop_path, renditions, runtime
     switch to the new version, library_cleanup_after = now + mediattl.OldVersionGrace (25 h:
     the longest signed URL lifetime, posters 24 h rounded up), job succeeded. Failure: job
     failed, movie still ready on its version
@@ -146,6 +150,15 @@ admin deletes a movie (no job queued or running) → one tx: movie deleting, hid
     goes last, so reconcile never sees that source without a row and never re-ingests it
 admin retries a failed movie → one tx: movie pending + a new queued job (the source is still
   in sources/) → the dispatcher picks it up as above
+
+a ready movie is unpublished: viewers do not see it
+  → admin uploads a poster (PUT …/poster): type from the bytes, size from the header before
+    decoding, centre crop to 2:3, JPEG variants 300/600/1000 (never upscaled) → one tx:
+    movie_posters rows + movies.poster_hash. No file is written: the bytes live in Postgres
+  → admin writes the overview, publishes (POST …/publish): ready + poster + overview, checked by
+    the store and enforced by a CHECK on movies → published_at = now; every viewer endpoint
+    shows it, with poster URLs the api signs and serves itself (/api/v1/posters/…)
+  → unpublish clears published_at and featured_at; deleting clears published_at too
 ```
 
 ---
@@ -178,6 +191,7 @@ One Go module at the root. Binaries under `cmd/`, shared code under `internal/`.
 │   ├── mediapath/            # the only place that builds or opens paths from request/DB values
 │   ├── medialayout/          # names in the media tree: inbox/, sources/, library/{id}/{version}/, master.m3u8
 │   ├── mediattl/             # signed URL lifetimes; the old-version grace is derived from them
+│   ├── poster/               # uploaded posters: type from bytes, size limits, 2:3 crop, JPEG variants; the Store seam
 │   ├── ffmpeg/               # probe, ladder, remux/encode, master playlist, poster, thumbnails, subtitles
 │   ├── transcode/            # the ingest pipeline, shared by cmd/transcoder and tools/devingest
 │   ├── ingest/               # transcode into library/{id}/{version}/ + the rows that describe it (shared, one way)
@@ -195,23 +209,26 @@ One Go module at the root. Binaries under `cmd/`, shared code under `internal/`.
 │   ├── hooks/pre-commit      # gitleaks on staged changes
 │   ├── install-hooks.sh      # .git/hooks is not tracked — restore after clone
 │   ├── check-media-delivery.sh # `make media-check`: signs its own URLs; tokens, headers, probes, path traversal
+│   ├── demo-seed.sh          # `make demo-seed`: 8 synthetic ffmpeg clips with invented titles (two with subtitles), a poster cut from a frame of each, ingested ready and published
 ├── docker/
 │   ├── nginx-media/          # media-delivery conf template, key guard + their testcontainers test
 │   ├── api.Dockerfile        # planned
 │   └── transcoder.Dockerfile # planned
 ├── docs/
 │   ├── architecture/         # 4+1 views (logical, process, development, physical, scenarios) + ADRs
+│   ├── screenshots/          # WebP screenshots of demo-seed content (desktop 1440, mobile 390)
 │   └── openapi.yaml          # API contract, validated against handler tests; source of web types
 ├── web/                      # React SPA, own toolchain (pnpm pinned via "packageManager")
 │   ├── security-headers.json # the SPA's CSP and other headers: vite preview now, the web nginx in the cluster
 │   └── src/
 │       ├── api/              # schema.ts generated from docs/openapi.yaml (`gen:api`) + client
-│       ├── auth/             # AuthProvider, RequireAuth (routes other than /login, /register,
-│       │                     #   /verify-email, /forgot-password, /reset-password,
-│       │                     #   /auth/google/done need a session), useAuthConfig,
+│       ├── auth/             # AuthProvider, RequireAuth (routes other than the public ones
+│       │                     #   in src/lib/nav.ts PUBLIC_PATHS: sign-in pages and /about
+│       │                     #   need a session), useAuthConfig,
 │       │                     #   useLinkToken (a mailed link's #token=…, cleared at once)
-│       ├── pages/
-│       ├── components/
+│       ├── content/          # the site's own pages in Markdown (about.md), parsed at build time
+│       ├── pages/                # Home (spotlight, rows, most popular), Browse, detail, watch, account, admin, sign-in, about
+│       ├── components/           # ui/: the design system's shared components
 │       └── lib/              # pure logic with vitest tests
 ├── var/media/                # local MEDIA_ROOT (inbox/, sources/, library/), gitignored
 │
@@ -244,21 +261,39 @@ Rules for every table:
 movies (
   id, title NOT NULL, year, tmdb_id, overview, runtime_sec,
   source_path   NOT NULL UNIQUE,   -- sources/{id}.{ext}; the watcher's rename claims each file once
-  library_path, poster_path,       -- library_path: library/{id}/{version} (version = the job
+  library_path, backdrop_path,     -- library_path: library/{id}/{version} (version = the job
                                    -- id), or library/{id} for movies published before
-                                   -- versioned folders.
-                                   -- poster_path and renditions.playlist_path are relative to
+                                   -- versioned folders. backdrop_path: the landscape video
+                                   -- frame the transcoder writes (poster.jpg; the column was
+                                   -- poster_path before 00017).
+                                   -- backdrop_path and renditions.playlist_path are relative to
                                    -- library/{id}/ and start with the version
   library_cleanup_after,           -- set when a retranscode publishes (now + 25 h) or a job
                                    -- fails (now, for .partial-* leftovers); once past and no job
                                    -- is active the watcher keeps only the current version
+  featured_at,                     -- set (now) when an admin features a published movie,
+                                   -- NULL otherwise (unpublish and delete clear it); the home
+                                   -- spotlight shows featured published movies, newest featured
+                                   -- first, else the 5 newest published
+  published_at,                    -- set (now) when an admin publishes it: visible to viewers.
+                                   -- NULL: only admins see it (every movie starts so)
+  poster_hash bytea,               -- SHA-256 of the uploaded poster's largest variant (32 bytes);
+                                   -- set and cleared in the tx that writes movie_posters, so
+                                   -- lists know the poster and its URLs without its bytes
   status        NOT NULL DEFAULT 'pending',
                                    -- CHECK: pending | processing | ready | failed | deleting
                                    -- deleting: an admin deleted it; admins only see it, the
                                    -- watcher removes its files and then the row
-  created_at, updated_at
+  created_at, updated_at,
+  CHECK (published_at IS NULL OR (status = 'ready' AND poster_hash IS NOT NULL
+         AND overview IS NOT NULL AND length(trim(overview)) > 0))
+                                   -- movies_published_check: the database itself refuses a
+                                   -- publish without a ready status, a poster and an overview,
+                                   -- and any later change that would break it (delete clears
+                                   -- published_at in the same statement)
 )
   INDEX (status)
+  INDEX (featured_at DESC) WHERE featured_at IS NOT NULL
 
 renditions (
   id, movie_id → movies ON DELETE CASCADE,
@@ -267,6 +302,34 @@ renditions (
   created_at, updated_at,
   UNIQUE (movie_id, height)
 )
+
+movie_posters (                    -- the uploaded portrait poster, one row per JPEG variant
+  movie_id → movies ON DELETE CASCADE,
+  width NOT NULL CHECK (width > 0),-- 300, 600, 1000; none above the 2:3 crop of the upload
+  height NOT NULL CHECK (height > 0), -- width × 3 / 2
+  bytes bytea NOT NULL,            -- the JPEG (quality 85, no metadata). Never selected by a
+                                   -- list query: read one variant at a time, by the poster URL
+  created_at, updated_at,
+  PRIMARY KEY (movie_id, width)    -- lists read the widths from this key, never the bytes
+)
+  -- Replaced whole, with movies.poster_hash, in one tx per upload. Only internal/store reads
+  -- or writes it, behind the poster.Store interface (ADR 0010)
+
+subtitle_tracks (                  -- the WebVTT files of the movie's current version
+  id, movie_id → movies ON DELETE CASCADE,
+  path NOT NULL,                   -- relative to library/{id}/, starts with the version:
+                                   -- "{version}/subs/0_eng.vtt" (old layout: "subs/0_eng.vtt")
+  language NOT NULL,               -- the source's ISO 639 tag, "und" when unknown
+  label,                           -- the stream's title ("SDH"), ≤ 100 characters; NULL when none
+  position NOT NULL CHECK (position >= 0),
+                                   -- the order of the source's subtitle streams
+  created_at, updated_at,
+  UNIQUE (movie_id, path)
+)
+  -- Replaced in the transaction that publishes a version (ingest, retranscode). Movies
+  -- published before this table: the watcher backfills them once (ready, no rows, a subs/
+  -- folder in the current version; read back by file name, under the movie's row lock and
+  -- only while library_path is unchanged, so it is idempotent)
 
 users (
   id, username NOT NULL UNIQUE,    -- CHECK (username = lower(username)): the database
@@ -369,6 +432,7 @@ watch_progress (
 )
   INDEX (user_id, updated_at DESC) -- continue-watching
   INDEX (movie_id)                 -- PK leads with user_id; needed for the cascade from movies
+  INDEX (updated_at, movie_id)     -- most popular: the rows saved in a window, grouped by movie
 
 transcode_jobs (
   id, movie_id → movies ON DELETE CASCADE,
@@ -449,14 +513,28 @@ GET    /api/v1/movies               → paginated list, ?q= title search (case-i
                                       title_asc (case-insensitive) | year_desc | year_asc, no year
                                       last, always an id tiebreak; ?year_from= / ?year_to=
                                       inclusive, 1880..2100, from <= to, a bound drops movies with
-                                      no year. ?status= is admin-only; a user sees ready movies only
-GET    /api/v1/movies/:id           → detail + renditions (non-ready: 404 for a user)
-GET    /api/v1/movies/:id/playback  → signed master.m3u8 + thumbnails URLs (6 h) + resume_sec, the
-                                      caller's saved position (null when none or watched ≥ 95%)
+                                      no year. ?status= is admin-only; a user sees published
+                                      movies only (published implies ready)
+GET    /api/v1/movies/popular       → ?window=week (default) | month | all, ?limit= 1..20 (10): published movies
+                                      ranked by distinct users whose progress was saved in the window
+                                      (last 7 / 30 days, or ever), ties by id; a movie nobody watched in
+                                      the window is not ranked. Each item: the movie + viewers
+GET    /api/v1/movies/featured      → the spotlight: featured published movies, newest featured first
+                                      (≤ 10); none featured → the 5 newest published, featured: false
+GET    /api/v1/movies/:id           → detail + renditions (unpublished: 404 for a user). Every movie in
+                                      list, detail, popular, featured and continue-watching carries
+                                      top_height, the tallest rendition (null with none), backdrop_url
+                                      (the video frame, signed on media-delivery) and poster (null or
+                                      {hash, variants: [{width, height, url}]}, URLs the api signs)
+GET    /api/v1/movies/:id/playback  → (unpublished: 404 for a user; an admin may play it) signed master.m3u8 + thumbnails URLs (6 h) + resume_sec, the
+                                      caller's saved position (null when none or watched ≥ 95%), +
+                                      subtitles: [{url (signed like the playlist), language (BCP 47:
+                                      "eng" → "en"), label (the stream's title or null)}]. The detail
+                                      response lists subtitle_languages (BCP 47, each once)
 POST   /api/v1/progress             → save watch position {movie_id, position_sec}: upsert on (user,
                                       movie); the user is the token's subject, never the body. Ready
                                       movies only, 0 ≤ position ≤ runtime_sec
-GET    /api/v1/continue-watching    → the caller's ready movies with progress, newest first, at most
+GET    /api/v1/continue-watching    → the caller's published movies with progress, newest first, at most
                                       20, leaving out those watched to ≥ 95% of runtime
 
 GET    /api/v1/me                   → the caller: id, username, role, email, email_verified_at,
@@ -508,14 +586,35 @@ GET    /api/v1/admin/jobs           → paginated, ?status=; id, movie_id + movi
                                       purpose, started_at, finished_at, error_msg (as stored), k8s_job_name
                                       or local_pid, created_at; newest first
 GET    /api/v1/admin/movies         → every status incl. deleting, ?status= ?q=, each with
-                                      active_job (queued | running | null), active_job_purpose and
-                                      library_cleanup_after
+                                      active_job (queued | running | null), active_job_purpose,
+                                      library_cleanup_after, overview, featured_at, published_at,
+                                      poster and backdrop_url
 POST   /api/v1/admin/movies/{id}/retry → failed only (else 409 not_failed): pending + a new
                                       queued job, one tx; a second active job is 409 job_active
 DELETE /api/v1/admin/movies/{id}    → 409 job_active while a job is queued or running; else
                                       deleting (one tx) → 202. Hidden from every non-admin
                                       endpoint and continue-watching at once, playback refused;
                                       the watcher removes files and row
+PATCH  /api/v1/admin/movies/{id}    → {title?, year?, overview?}, at least one: title 1..200 characters
+                                      (trimmed, no control characters, never null), year 1880..2100 or
+                                      null, overview ≤ 2000 (null or "" clears it; 409 movie_published
+                                      on a published movie); any status → 200 + the admin movie
+POST   /api/v1/admin/movies/{id}/publish → ready + poster + non-empty overview, checked in that order,
+                                      else 409 not_ready | missing_poster | missing_overview → 204
+                                      (again: published_at kept)
+DELETE /api/v1/admin/movies/{id}/publish → any status; also unfeatures → 204
+PUT    /api/v1/admin/movies/{id}/poster → the image as the body, any status. The admin check comes
+                                      before the body is read. ≤ 10 MB (413 too_large); type from
+                                      the bytes (JPEG, PNG, WebP), never the header or name;
+                                      DecodeConfig first: ≤ 25 MP, ≥ 300×450 (400 invalid_image);
+                                      one poster processed at a time per pod; centre crop to exactly
+                                      2:3, CatmullRom to widths 300/600/1000 never upscaled, JPEG
+                                      q85 (metadata dropped; EXIF orientation not applied) → one tx:
+                                      rows + poster_hash → 200 + the admin movie
+DELETE /api/v1/admin/movies/{id}/poster → 409 movie_published while published → 204
+POST   /api/v1/admin/movies/{id}/feature → published only (409 not_ready, or not_published for a
+                                      ready one); again moves it to the front → 204
+DELETE /api/v1/admin/movies/{id}/feature → any status → 204
 POST   /api/v1/admin/movies/{id}/retranscode → ready only (else 409 not_ready), never beside a
                                       queued or running job (409 job_active): a job with purpose
                                       retranscode → 202. The movie stays ready and playable
@@ -528,7 +627,8 @@ deleting. There is no "scan now": the watcher already runs every 5 minutes, and 
 started would be either file work in the api or a second way to start the watcher, for a wait
 of at most 5 minutes.
 
-Every /api/v1 endpoint needs `Authorization: Bearer <access token>` except the /auth/ ones.
+Every /api/v1 endpoint needs `Authorization: Bearer <access token>` except the /auth/ ones and
+`GET /api/v1/posters/…`, whose signed URL is the permission (an `<img>` sends no token).
 Accounts come from `cmd/useradmin` (no email, log in as always, no password reset by mail: an
 admin runs `useradmin set-password`), from registration, or from signing in with Google.
 
@@ -558,7 +658,8 @@ GET    /metrics
 ```
 
 HLS segments are **not** served by `api`. They come from `media-delivery` at
-`/media/{token}/{expires}/{movie_id}/{version}/...`, which is a separate Ingress path.
+`/media/{token}/{expires}/{movie_id}/{version}/...`, which is a separate Ingress path. Uploaded
+posters are the exception: they live in Postgres and the api serves them (ADR 0010).
 
 ### Signed media URLs
 
@@ -572,7 +673,7 @@ and thumbnails included). `/healthz` and `/readyz` stay unsigned.
   the client IP
 - Missing, malformed or wrong token → 403; expired → 410
 - Signed only by `service.MediaSigner`, never by hand: `playlist_url` and `thumbnails_url`
-  (6 h), every `poster_url` (24 h, in list, detail and continue-watching). Expiry is rounded up
+  (6 h), every `backdrop_url` (24 h, in list, detail and continue-watching). Expiry is rounded up
   to 1/24 of the lifetime so URLs stay stable and the browser cache works. Responses carrying
   them are `Cache-Control: no-store`; media itself is `private`, never kept by a shared cache
 - `MEDIA_SIGNING_KEY`: required, no default, ≥ 32 bytes of base64 characters (it is written
@@ -580,6 +681,13 @@ and thumbnails included). `/healthz` and `/readyz` stay unsigned.
   image's `/etc/nginx/templates` envsubst at start (`NGINX_ENVSUBST_FILTER=^MEDIA_SIGNING_KEY$`,
   rendered into a writable `/etc/nginx/conf.d` tmpfs / emptyDir), never baked into the image.
   `docker/nginx-media/05-require-media-signing-key.sh` stops the container on a bad key
+- Poster URLs are the api's own: `/api/v1/posters/{movie_id}/{width}/{hash}.jpg?exp=…&sig=…`,
+  `sig = base64url(HMAC-SHA256(k, "{movie_id}/{width}/{hash}/{exp}"))` with
+  `k = HMAC-SHA256(MEDIA_SIGNING_KEY, "poster-url-signing-v1")`: a key for this purpose only,
+  no new secret. Same lifetime and rounding as backdrops (`PosterURLTTL`). Bad or missing
+  signature 403, expired 410 (signature checked first), no such poster (an old hash) 404. Served
+  `Cache-Control: private, max-age=<until exp>, immutable`, `ETag` = the hash: a new upload
+  changes the hash, so the URL. Signed only for movies the caller may see
 - `DEV_MEDIA_URL_TTL` (dev only) shortens every lifetime to see a 410; the api refuses to start
   with it unless `HTTP_ADDR` is loopback. The transcoder reads it too (the local dispatcher
   passes its environment on; a Kubernetes Job never gets it), so the old-version grace shrinks
@@ -615,7 +723,31 @@ and thumbnails included). `/healthz` and `/readyz` stay unsigned.
 - No `any`
 - Types for API responses generated from OpenAPI spec, not hand-written
 - Tokens never touch `localStorage` or `sessionStorage`. The access token lives in the `Session`
-  object only; the refresh token is an HttpOnly cookie the code never sees
+  object only; the refresh token is an HttpOnly cookie the code never sees. The only thing in
+  `localStorage` is the player's preferences (volume, mute, speed, subtitle language and size;
+  `src/lib/playerPrefs.ts`), every access in try/catch: the player works without storage
+- The product's name comes from one place: `VITE_BRAND_NAME` / `VITE_BRAND_ACCENT` (defaults
+  "HLS VOD" / "VOD"), resolved and checked at build time by `src/lib/brand.ts` (vite.config.ts),
+  used by the wordmark, `<title>%VITE_BRAND_NAME%</title>` and the generated
+  `manifest.webmanifest`. Never write a product name in a component; the api's mails use
+  `SITE_NAME` (default "HLS VOD")
+- Navigation is data in `src/lib/nav.ts` (tested): header left logo · Home · Browse (the
+  current one `aria-current="page"`), right search · avatar menu (Account, Admin for admins
+  only, Sign out). Admin is never in the header. Footer: About · Privacy (`/about#privacy`)
+- `/about` is public. Its text is `src/content/about.md`, turned into a tree at build time by
+  the `markdown-pages` plugin in vite.config.ts (`src/lib/markdown.ts`: headings with `{#id}`
+  anchors, paragraphs, `- ` lists, strong, emphasis, code, links to `/`, `#`, `https:` and
+  `mailto:` only; `{{brand}}` = `VITE_BRAND_NAME`). Raw HTML, an unknown placeholder or
+  anything outside the subset fails the build; React renders the tree, never HTML. No runtime
+  Markdown library. Keep its Privacy section true when what is stored, the cookies or the
+  outside services change
+- The player (`src/components/player/`): icon-only controls, each with an aria-label and a
+  tooltip; keyboard map in `src/lib/playerKeys.ts` (space/k, ←/→ 5 s, ↑/↓ 10 %, m, f, c, 0–9,
+  Esc; never while typing), feedback over the video in `src/lib/feedback.ts` (skips add up
+  within 600 ms), the settings menu's state in `src/lib/settingsMenu.ts`, subtitle naming in
+  `src/lib/subtitleMenu.ts` (Intl.DisplayNames, numbered duplicates). Subtitles are `<track>`
+  elements (same origin); only the chosen one is enabled, so the others are never fetched.
+  iOS ignores the page's volume: the slider is hidden there (`src/lib/volume.ts`)
 - Refresh only through `session.refresh()` / `session.withAuth()`; a request that replaces the
   session (the password change) goes through `session.reissue()`, under the same lock. Every tab shares one refresh
   cookie and each refresh rotates it, so two tabs refreshing at once would be token reuse and log
@@ -625,12 +757,26 @@ and thumbnails included). `/healthz` and `/readyz` stay unsigned.
 - Signed media URLs expire mid-playback: on a 410 from media-delivery (playlist or segment) the
   player fetches `/movies/{id}/playback` again and reloads at the same position, keeping
   play/pause (the new URL may be a newer version folder); at most once per 60 s, never for a 403
-  (`src/lib/mediaExpiry.ts`). A poster that fails to load refetches its page's data once
+  (`src/lib/mediaExpiry.ts`). A poster or backdrop that fails to load refetches its page's data once
 - The CSP forbids inline scripts, inline `<style>` and eval: no `style="…"` in HTML, React's
   `style={{…}}` is fine (it sets CSSOM properties). A new source goes into
   `web/security-headers.json` with its reason in the PR
 - The `pagehide` progress save is one plain `fetch(url, { keepalive: true })` with the current
   token, not openapi-fetch: Firefox drops a `Request` object's keepalive when the tab closes
+- Colours, fonts and timings come from the tokens in `src/index.css` only: `bg-surface`,
+  `text-fg-muted`, `border-line`, `bg-accent`… Tailwind's default palette is off (a
+  `bg-neutral-800` renders nothing) and `src/lib/designTokens.test.ts` fails on a palette class or
+  a hex value in a component. Motion stays within 150–250 ms; transforms are `motion-safe:` and
+  the spotlight never auto-advances with reduced motion. Keyboard logic (tabs, rows, menus) and
+  the spotlight's timer are pure modules in `src/lib` (`keys.ts`, `spotlight.ts`) with tests
+- Show only data the api has: no ratings, votes, genres or cast
+- Posters (`src/components/Poster.tsx`, `src/lib/poster.ts`): portrait cards draw `PosterImage`
+  in a fixed 2:3 box (nothing jumps while it loads), `srcset` of the variants, `sizes` from
+  `POSTER_SIZES` (one entry per layout), lazy except the first visible ones, alt = the title.
+  Continue watching keeps the landscape `Backdrop`; the detail page blurs the backdrop behind
+  the poster. The admin's upload previews the 2:3 crop on a canvas as a `data:` URL (the CSP
+  has no `blob:` in img-src) and uploads with XMLHttpRequest for progress, still through
+  `session.withAuth`
 - The Turnstile script (`src/lib/turnstile.ts`) loads only when a page shows a challenge
   (register, resend, login after 3 failures), never in `index.html`. A token is good once:
   remount the widget after every submit
@@ -818,7 +964,14 @@ bin/transcoder --movie-id <id>
 
 # Put a real movie in the local catalog as ready in one step, skipping the queue (dev only);
 # prints the new movie id
-make dev-ingest INPUT=~/Videos/movie.mp4 TITLE="My test"
+# POSTER is processed like an admin upload; PUBLISH=1 publishes it (needs POSTER and OVERVIEW)
+make dev-ingest INPUT=~/Videos/movie.mp4 TITLE="My test" [YEAR=2020] [OVERVIEW="..."] [POSTER=poster.png] [PUBLISH=1]
+
+# Eight demo movies (synthetic ffmpeg lavfi clips, 20-40 s, 1080p/720p, invented titles, years and
+# overviews), each with a 2:3 poster cut from one of its frames, ingested ready and published like
+# dev-ingest; the clips live in a temp dir and are removed.
+# Writes to $MEDIA_ROOT and the compose Postgres; running it twice adds them twice
+make demo-seed
 
 # media-delivery (nginx) on 127.0.0.1:8081: /media/{token}/{expires}/{id}/... serves
 # $MEDIA_ROOT/library/{id}/... Needs MEDIA_SIGNING_KEY in .env (openssl rand -base64 48), the

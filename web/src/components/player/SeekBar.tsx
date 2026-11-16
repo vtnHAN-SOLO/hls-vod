@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 
-import { formatTime } from "../lib/format";
-import { cueAt, type ThumbnailCue } from "../lib/thumbnails";
+import { formatTime } from "../../lib/format";
+import { SKIP_SEC } from "../../lib/playerKeys";
+import { cueAt, type ThumbnailCue } from "../../lib/thumbnails";
 
 interface Props {
   time: number;
@@ -9,15 +10,15 @@ interface Props {
   buffered: number;
   cues: readonly ThumbnailCue[];
   onSeek: (t: number) => void;
+  /** Arrow keys: a skip, so the player shows its bubble like the buttons do. */
+  onSkip: (seconds: number) => void;
 }
-
-const KEY_STEP = 5; // seconds per arrow key
 
 /**
  * Seek bar with a sprite preview of the frame under the pointer. The preview
  * reads the WebVTT sprite index; with no index it still shows the time.
  */
-export function SeekBar({ time, duration, buffered, cues, onSeek }: Props) {
+export function SeekBar({ time, duration, buffered, cues, onSeek, onSkip }: Props) {
   const barRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ x: number; t: number; width: number } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -47,7 +48,8 @@ export function SeekBar({ time, duration, buffered, cues, onSeek }: Props) {
       aria-valuemax={Math.round(duration)}
       aria-valuenow={Math.round(time)}
       aria-valuetext={`${formatTime(time)} of ${formatTime(duration)}`}
-      className="group relative flex h-4 cursor-pointer touch-none items-center outline-none"
+      // A tall hit area (the line is thin) and a ring for keyboard focus.
+      className="group relative flex h-6 cursor-pointer touch-none items-center rounded outline-none focus-visible:ring-2 focus-visible:ring-accent-soft"
       onPointerMove={(e) => {
         const p = at(e.clientX);
         setHover(p);
@@ -70,16 +72,19 @@ export function SeekBar({ time, duration, buffered, cues, onSeek }: Props) {
         if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
           e.preventDefault();
           e.stopPropagation();
-          const step = e.key === "ArrowLeft" ? -KEY_STEP : KEY_STEP;
-          onSeek(Math.min(Math.max(time + step, 0), duration));
+          onSkip(e.key === "ArrowLeft" ? -SKIP_SEC : SKIP_SEC);
+        } else if (e.key === "Home" || e.key === "End") {
+          e.preventDefault();
+          e.stopPropagation();
+          onSeek(e.key === "Home" ? 0 : duration);
         }
       }}
     >
-      <div className="relative h-1 w-full rounded-full bg-white/20 transition-[height] group-hover:h-1.5">
-        <div className="absolute inset-y-0 left-0 rounded-full bg-white/35" style={{ width: pct(buffered) }} />
-        <div className="absolute inset-y-0 left-0 rounded-full bg-red-600" style={{ width: pct(time) }} />
+      <div className="relative h-1 w-full rounded-full bg-fg/20 transition-[height] duration-150 group-hover:h-1.5">
+        <div className="absolute inset-y-0 left-0 rounded-full bg-fg/35" style={{ width: pct(buffered) }} />
+        <div className="absolute inset-y-0 left-0 rounded-full bg-accent" style={{ width: pct(time) }} />
         <div
-          className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-red-600 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
+          className="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent-soft opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100"
           style={{ left: pct(time) }}
         />
       </div>
@@ -91,7 +96,7 @@ export function SeekBar({ time, duration, buffered, cues, onSeek }: Props) {
         >
           {cue && (
             <div
-              className="rounded border border-white/30 bg-neutral-900 shadow-lg"
+              className="rounded border border-line-strong bg-surface shadow-lg"
               style={{
                 width: cue.width,
                 height: cue.height,
@@ -101,7 +106,7 @@ export function SeekBar({ time, duration, buffered, cues, onSeek }: Props) {
               }}
             />
           )}
-          <span className="rounded bg-black/80 px-1.5 py-0.5 text-xs tabular-nums">{formatTime(hover.t)}</span>
+          <span className="rounded bg-scrim/80 px-1.5 py-0.5 text-xs tabular-nums">{formatTime(hover.t)}</span>
         </div>
       )}
     </div>

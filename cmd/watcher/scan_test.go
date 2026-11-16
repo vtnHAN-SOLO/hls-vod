@@ -618,6 +618,56 @@ func TestWatcher(t *testing.T) {
 		}
 	})
 
+	t.Run("subtitle rows are backfilled once, for the version the movie plays", func(t *testing.T) {
+		e := setup(t)
+		subs := func(id, version string, names ...string) {
+			t.Helper()
+			dir := filepath.Join(e.dir, medialayout.Library, id, version, "subs")
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			for _, n := range names {
+				writeOld(t, filepath.Join(dir, n), "WEBVTT\n")
+			}
+		}
+		versioned, v := model.NewID(), model.NewID()
+		readyMovie(t, versioned, medialayout.VersionPath(versioned, v), nil)
+		subs(versioned, v, "1_vie.vtt", "0_eng.vtt", "2_fre_forced.vtt", "notes.txt", "0_english.vtt")
+		subs(versioned, model.NewID(), "0_ger.vtt") // another version: never read
+		legacy := model.NewID()                     // the layout from before versioned folders
+		readyMovie(t, legacy, medialayout.LibraryPath(legacy), nil)
+		subs(legacy, "", "0_jpn.vtt")
+		bare := model.NewID() // no subs/ folder: nothing to do
+		readyMovie(t, bare, medialayout.VersionPath(bare, model.NewID()), nil)
+
+		r, err := newScanner(e, st).run(t.Context())
+		if err != nil || r.Subtitled != 2 || r.Failed != 0 {
+			t.Fatalf("report %+v, err %v; want two movies subtitled", r, err)
+		}
+		got, err := st.ListSubtitles(t.Context(), versioned)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []model.SubtitleTrack{
+			{Path: v + "/subs/0_eng.vtt", Language: "eng", Position: 0},
+			{Path: v + "/subs/1_vie.vtt", Language: "vie", Position: 1},
+			{Path: v + "/subs/2_fre_forced.vtt", Language: "fre", Position: 2},
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("tracks = %+v, want %+v", got, want)
+		}
+		if got, _ := st.ListSubtitles(t.Context(), legacy); len(got) != 1 || got[0].Path != "subs/0_jpn.vtt" {
+			t.Fatalf("legacy tracks = %+v", got)
+		}
+		// Idempotent: the next run finds nothing to do.
+		if r, err := newScanner(e, st).run(t.Context()); err != nil || r.Subtitled != 0 {
+			t.Fatalf("second run: %+v, %v", r, err)
+		}
+		if got, _ := st.ListSubtitles(t.Context(), versioned); len(got) != 3 {
+			t.Fatalf("second run changed the rows: %+v", got)
+		}
+	})
+
 	t.Run("purging a deleted movie removes every version", func(t *testing.T) {
 		e := setup(t)
 		id := deleted(t, e, "Versions", true)

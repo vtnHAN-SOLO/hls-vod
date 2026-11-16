@@ -33,6 +33,7 @@ type testFixtures struct {
 	key            []byte
 	signer         *auth.Signer
 	media          *service.MediaSigner
+	mediaKey       string
 	hasher         *auth.Hasher
 	adminPassword  string
 	viewerPassword string
@@ -62,7 +63,8 @@ func fixtures(t *testing.T) *testFixtures {
 		if f.signer, fixturesErr = auth.NewSigner(f.key); fixturesErr != nil {
 			return
 		}
-		if f.media, fixturesErr = service.NewMediaSigner(randomString(48), 0); fixturesErr != nil {
+		f.mediaKey = randomString(48)
+		if f.media, fixturesErr = service.NewMediaSigner(f.mediaKey, 0); fixturesErr != nil {
 			return
 		}
 		f.hasher = auth.NewHasher(2)

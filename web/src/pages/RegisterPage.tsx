@@ -9,8 +9,9 @@ import { GoogleButton } from "../components/GoogleButton";
 import { ResendVerification } from "../components/ResendVerification";
 import { Turnstile } from "../components/Turnstile";
 import { checkRegistration, describeSignupError } from "../lib/registration";
+import { AuthShell } from "../components/AuthShell";
 
-const inputClass = "rounded-md border border-white/10 bg-neutral-900 px-3 py-2 outline-none focus:border-white/40";
+const inputClass = "field h-10";
 
 export function RegisterPage() {
   const { state } = useAuth();
@@ -43,20 +44,20 @@ export function RegisterPage() {
   if (state.status === "authenticated") return <Navigate to="/" replace />;
 
   const shell = (children: React.ReactNode) => (
-    <main className="mx-auto flex max-w-sm flex-col gap-6 px-4 py-16">{children}</main>
+    <AuthShell wide>{children}</AuthShell>
   );
 
-  if (config.isPending) return shell(<div className="h-64 animate-pulse rounded-md bg-neutral-900" aria-label="Loading" />);
-  if (config.isError) return shell(<p className="text-sm text-red-300">{describeSignupError(config.error)}</p>);
+  if (config.isPending) return shell(<div className="h-64 animate-pulse rounded-md bg-surface" aria-label="Loading" />);
+  if (config.isError) return shell(<p className="text-sm text-danger">{describeSignupError(config.error)}</p>);
   const siteKey = config.data.turnstile_site_key;
   if (!config.data.registration_open || siteKey === null) {
     return shell(
       <>
-        <h1 className="text-2xl font-semibold">Register</h1>
-        <p className="text-sm text-neutral-300">
+        <h1 className="text-2xl font-bold">Register</h1>
+        <p className="text-sm text-fg-muted">
           {config.data.registration_open ? "Registration is unavailable right now." : "Registration is closed."}
         </p>
-        <Link to="/login" className="text-sm underline hover:text-white/80">
+        <Link to="/login" className="text-sm underline hover:text-fg">
           Log in
         </Link>
       </>,
@@ -66,14 +67,14 @@ export function RegisterPage() {
   if (sentTo !== null) {
     return shell(
       <>
-        <h1 className="text-2xl font-semibold">Check your email</h1>
-        <p className="text-sm text-neutral-300">
-          If <span className="font-medium text-neutral-100">{sentTo}</span> can be used, we sent it a link to confirm
+        <h1 className="text-2xl font-bold">Check your email</h1>
+        <p className="text-sm text-fg-muted">
+          If <span className="font-medium text-fg">{sentTo}</span> can be used, we sent it a link to confirm
           the address. Open it within 24 hours to finish creating your account. Nothing there? Check the spam folder,
           or send it again:
         </p>
         <ResendVerification siteKey={siteKey} initialEmail={sentTo} />
-        <Link to="/login" className="text-sm underline hover:text-white/80">
+        <Link to="/login" className="text-sm underline hover:text-fg">
           Back to log in
         </Link>
       </>,
@@ -102,11 +103,11 @@ export function RegisterPage() {
 
   return shell(
     <>
-      <h1 className="text-2xl font-semibold">Register</h1>
+      <h1 className="text-2xl font-bold">Register</h1>
       {config.data.google_enabled && (
         <>
           <GoogleButton />
-          <p className="text-center text-xs text-neutral-500">or register with an email address</p>
+          <p className="text-center text-xs text-fg-subtle">or register with an email address</p>
         </>
       )}
       <form
@@ -127,7 +128,7 @@ export function RegisterPage() {
           autoCapitalize: "none",
           spellCheck: false,
         })}
-        <p className="-mt-2 text-xs text-neutral-500">Other people can see your username.</p>
+        <p className="-mt-2 text-xs text-fg-subtle">Other people can see your username.</p>
         {field("Password", password, setPassword, { type: "password", name: "password", autoComplete: "new-password" })}
         {field("Confirm password", confirm, setConfirm, {
           type: "password",
@@ -136,21 +137,21 @@ export function RegisterPage() {
         })}
         <Turnstile key={attempt} siteKey={siteKey} onToken={setToken} />
         {error && (
-          <p role="alert" className="text-sm text-red-300">
+          <p role="alert" className="text-sm text-danger">
             {error}
           </p>
         )}
         <button
           type="submit"
           disabled={signup.isPending}
-          className="rounded-md bg-white/90 px-3 py-2 font-medium text-neutral-900 hover:bg-white disabled:opacity-50"
+          className="inline-flex h-10 items-center justify-center rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition-colors duration-150 hover:bg-accent-hover disabled:opacity-50"
         >
           {signup.isPending ? "Creating account…" : "Create account"}
         </button>
       </form>
-      <p className="text-sm text-neutral-400">
+      <p className="text-sm text-fg-muted">
         Already have an account?{" "}
-        <Link to="/login" className="underline hover:text-white/80">
+        <Link to="/login" className="underline hover:text-fg">
           Log in
         </Link>
       </p>

@@ -78,6 +78,8 @@ type RegistrationConfig struct {
 	TurnstileSiteKey string
 	// GoogleEnabled: sign in with Google is configured.
 	GoogleEnabled bool
+	// SiteName names the product in mails (SITE_NAME); "" is the default name.
+	SiteName string
 }
 
 // AuthConfig is what the login and register pages need to know.
@@ -173,11 +175,11 @@ func (r *Registration) Register(ctx context.Context, in RegisterInput) error {
 	}
 	if reg.Existing != nil {
 		r.log.InfoContext(ctx, "registration for an address that has an account: notice mailed", "user_id", reg.Existing.ID)
-		r.send(ctx, pmail.AccountExistsMessage(email, r.cfg.BaseURL+"/login"))
+		r.send(ctx, pmail.AccountExistsMessage(r.cfg.SiteName, email, r.cfg.BaseURL+"/login"))
 		return nil
 	}
 	r.log.InfoContext(ctx, "account registered, waiting for email verification", "user_id", reg.User.ID)
-	r.send(ctx, pmail.VerifyMessage(email, username, r.verifyLink(token)))
+	r.send(ctx, pmail.VerifyMessage(r.cfg.SiteName, email, username, r.verifyLink(token)))
 	return nil
 }
 
@@ -211,7 +213,7 @@ func (r *Registration) ResendVerification(ctx context.Context, emailAddr, captch
 		r.log.InfoContext(ctx, "verification resend: nothing sent", "reason", outcome.String())
 		return nil
 	}
-	r.send(ctx, pmail.VerifyMessage(email, u.Username, r.verifyLink(token)))
+	r.send(ctx, pmail.VerifyMessage(r.cfg.SiteName, email, u.Username, r.verifyLink(token)))
 	return nil
 }
 

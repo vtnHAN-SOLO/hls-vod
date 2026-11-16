@@ -64,7 +64,7 @@ func fakeTranscoder(mode string) int {
 		if err != nil {
 			return 11
 		}
-		pub := store.Published{LibraryPath: "library/" + movieID, PosterPath: "poster.jpg", RuntimeSec: 60,
+		pub := store.Published{LibraryPath: "library/" + movieID, BackdropPath: "poster.jpg", RuntimeSec: 60,
 			Renditions: []store.NewRendition{{Height: 480, BitrateKbps: 1000, PlaylistPath: "480p/index.m3u8", SizeBytes: 1}}}
 		if err := st.FinishTranscode(ctx, t, pub); err != nil {
 			return 12

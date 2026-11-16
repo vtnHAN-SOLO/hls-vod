@@ -110,6 +110,11 @@ func TestLoginRefreshReuseEndToEnd(t *testing.T) {
 		`INSERT INTO movies (title, source_path, status) VALUES ('Ready', 'sources/r.mkv', 'ready'), ('Queued', 'sources/q.mkv', 'pending')`); err != nil {
 		t.Fatal(err)
 	}
+	var published string
+	if err := db.Pool.QueryRow(t.Context(), `SELECT id::text FROM movies WHERE status = 'ready'`).Scan(&published); err != nil {
+		t.Fatal(err)
+	}
+	db.Publish(t.Context(), t, published)
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

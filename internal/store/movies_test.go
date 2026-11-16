@@ -1,7 +1,6 @@
 package store_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -129,7 +128,7 @@ func TestMovieQueries(t *testing.T) {
 		id := ids["newest"]
 		if _, err := db.Pool.Exec(t.Context(), `
 			UPDATE movies SET year = 1999, tmdb_id = 603, overview = 'o', runtime_sec = 8160,
-			       library_path = '/library/x', poster_path = 'poster.jpg' WHERE id = $1`, id); err != nil {
+			       library_path = '/library/x', backdrop_path = 'poster.jpg' WHERE id = $1`, id); err != nil {
 			t.Fatal(err)
 		}
 		m, err := st.GetMovie(t.Context(), id)
@@ -138,7 +137,7 @@ func TestMovieQueries(t *testing.T) {
 		}
 		if m.ID != id || m.Title != "newest" || m.Status != model.StatusReady ||
 			*m.Year != 1999 || *m.TMDBID != 603 || *m.Overview != "o" || *m.RuntimeSec != 8160 ||
-			*m.LibraryPath != "/library/x" || *m.PosterPath != "poster.jpg" || m.SourcePath == "" ||
+			*m.LibraryPath != "/library/x" || *m.BackdropPath != "poster.jpg" || m.SourcePath == "" ||
 			!m.UpdatedAt.After(m.CreatedAt) {
 			t.Fatalf("movie = %+v", m)
 		}
@@ -147,7 +146,7 @@ func TestMovieQueries(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if null.Year != nil || null.Overview != nil || null.PosterPath != nil || null.LibraryPath != nil {
+		if null.Year != nil || null.Overview != nil || null.BackdropPath != nil || null.LibraryPath != nil {
 			t.Fatalf("NULL columns should scan to nil: %+v", null)
 		}
 	})
@@ -254,7 +253,7 @@ func TestMovieQueries(t *testing.T) {
 func insertMovie(t *testing.T, pool *pgxpool.Pool, title, source string, status model.MovieStatus, at time.Time) string {
 	t.Helper()
 	var id string
-	err := pool.QueryRow(context.Background(), `
+	err := pool.QueryRow(t.Context(), `
 		INSERT INTO movies (title, source_path, status, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $4) RETURNING id::text`, title, source, string(status), at).Scan(&id)
 	if err != nil {

@@ -6,8 +6,9 @@ import { ApiError, resetPassword } from "../api/client";
 import { useLinkToken } from "../auth/useLinkToken";
 import { checkNewPassword } from "../lib/recovery";
 import { describeSignupError } from "../lib/registration";
+import { AuthShell } from "../components/AuthShell";
 
-const inputClass = "rounded-md border border-white/10 bg-neutral-900 px-3 py-2 outline-none focus:border-white/40";
+const inputClass = "field h-10";
 
 /** Opened from the mail: /reset-password#token=…. A new password, then log in with it. */
 export function ResetPasswordPage() {
@@ -46,15 +47,15 @@ export function ResetPasswordPage() {
   );
 
   return (
-    <main className="mx-auto flex max-w-sm flex-col gap-6 px-4 py-16">
-      <h1 className="text-2xl font-semibold">Choose a new password</h1>
+    <AuthShell>
+      <h1 className="text-2xl font-bold">Choose a new password</h1>
       {deadLink ? (
         <>
-          <p role="alert" className="text-sm text-red-300">
+          <p role="alert" className="text-sm text-danger">
             This link is invalid, expired or already used. Links work once, for 30 minutes, and only the newest one
             works.
           </p>
-          <Link to="/forgot-password" className="text-sm underline hover:text-white/80">
+          <Link to="/forgot-password" className="text-sm underline hover:text-fg">
             Ask for a new link
           </Link>
         </>
@@ -69,23 +70,23 @@ export function ResetPasswordPage() {
             else reset.mutate();
           }}
         >
-          <p className="text-sm text-neutral-300">This logs out every device signed in to your account.</p>
+          <p className="text-sm text-fg-muted">This logs out every device signed in to your account.</p>
           {field("New password", password, setPassword)}
           {field("Confirm new password", confirm, setConfirm)}
           {error && (
-            <p role="alert" className="text-sm text-red-300">
+            <p role="alert" className="text-sm text-danger">
               {error}
             </p>
           )}
           <button
             type="submit"
             disabled={reset.isPending}
-            className="rounded-md bg-white/90 px-3 py-2 font-medium text-neutral-900 hover:bg-white disabled:opacity-50"
+            className="inline-flex h-10 items-center justify-center rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition-colors duration-150 hover:bg-accent-hover disabled:opacity-50"
           >
             {reset.isPending ? "Saving…" : "Set new password"}
           </button>
         </form>
       )}
-    </main>
+    </AuthShell>
   );
 }

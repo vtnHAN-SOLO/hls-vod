@@ -20,15 +20,37 @@ flowchart LR
     md -- "read-only" --> vol
 ```
 
+![The home page: a spotlight over the featured movie, the continue-watching row and the most popular ranking](docs/screenshots/home-desktop.webp)
+
+![The player: icon controls, subtitles above them, and the settings menu](docs/screenshots/player-settings.webp)
+
+<p align="center"><img src="docs/screenshots/detail-mobile.webp" alt="A movie's page on a phone" width="300"></p>
+
+Screenshots show only the synthetic demo movies `make demo-seed` generates.
+
 ## Features
 
 - **Ingest pipeline:** drop a file in `inbox/` and it is claimed, queued and transcoded into an
   adaptive HLS ladder. The top rung is a remux when the codec allows; the source is never
-  upscaled. Posters, seek-preview thumbnail sprites and subtitles are produced in the same run.
-- **Playback:** hls.js with adaptive bitrate and a quality menu, seek previews, and resume
-  where you left off ("continue watching"). Expired media URLs are renewed mid-movie, without
-  interrupting playback.
+  upscaled. A backdrop frame, seek-preview thumbnail sprites and subtitles are produced in the
+  same run.
+- **Playback:** hls.js with adaptive bitrate, seek previews, and resume where you left off
+  ("continue watching"). Icon-only controls with tooltips, ±5 s skips whose on-screen bubble adds
+  up, a volume slider, a settings menu (quality, subtitles, subtitle size, speed), keyboard
+  shortcuts, double-tap to skip on touch screens, picture-in-picture. Subtitles from the source
+  file, signed like the video. Expired media URLs are renewed mid-movie, without interrupting
+  playback.
+- **Your own name:** the product's name is configuration (`VITE_BRAND_NAME`, `SITE_NAME`), not
+  code.
+- **Browsing:** a dark, responsive interface with one design system (tokens, self-hosted
+  fonts, inline icons): a home page with a rotating spotlight of featured movies, continue
+  watching, recently added and a "most popular" ranking by distinct viewers (week, month, all
+  time); portrait poster cards with responsive `srcset`; a detail page with the poster over the
+  movie's blurred frame. Keyboard reachable, reduced-motion aware, WCAG AA contrast.
 - **Catalog:** search, sort and year filters, all in the URL.
+- **About and privacy:** a public About page with a plain-language privacy section (what is
+  stored, the one login cookie, the outside services), written in Markdown and turned into data
+  at build time: no Markdown library in the bundle, no raw HTML.
 - **Accounts:**
   - open registration with email verification (Resend) and a Cloudflare Turnstile challenge;
   - forgot / reset password;
@@ -38,8 +60,13 @@ flowchart LR
 - **Admin area:**
   - users: disable, role; never zero admins;
   - transcode jobs with their errors;
-  - movies: retry a failed one, delete, and retranscode a ready movie into a new version
-    without downtime.
+  - movies: retry a failed one, delete, retranscode a ready movie into a new version
+    without downtime, edit title, year and overview, feature it on the home page;
+  - posters: upload an image (JPEG, PNG or WebP; type read from the bytes, size checked
+    before decoding), cropped to 2:3 and resized to three JPEG widths, stored in Postgres and
+    served by signed URLs (see ADR 0010);
+  - publishing: viewers see a movie only once it is ready, has a poster and a description,
+    a rule the database itself enforces with a CHECK constraint.
 
 ## Backend highlights
 
@@ -96,7 +123,8 @@ make web-dev               # http://127.0.0.1:5173
 
 Put a movie in the catalog: drop it into `$MEDIA_ROOT/inbox/`, then run `make scan` (watcher)
 and `make dispatch` (dispatcher with the local backend), or use `make dev-ingest
-INPUT=movie.mp4 TITLE="My test"`.
+INPUT=movie.mp4 TITLE="My test"`. `make demo-seed` adds eight synthetic demo movies (ffmpeg test
+sources and fractals, invented titles) to look around with.
 
 ## Testing
 

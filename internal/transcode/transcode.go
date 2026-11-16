@@ -54,6 +54,16 @@ type Result struct {
 	Duration time.Duration // length of the written top rung
 	Rungs    []Rung        // tallest first
 	Poster   string        // poster file, relative to Output
+	// Subtitles are the WebVTT files written, in source stream order.
+	Subtitles []Subtitle
+}
+
+// Subtitle is one written WebVTT track.
+type Subtitle struct {
+	Path     string // relative to Output, e.g. "subs/0_eng.vtt"
+	Language string // the source's tag, "und" when absent or not a plain ISO 639 code
+	Title    string // the stream's title, "" when none
+	Position int    // the n of subs/{n}_…: its place among the source's subtitle streams
 }
 
 // Rung is one written HLS rendition.
@@ -196,15 +206,17 @@ func Run(ctx context.Context, log *slog.Logger, opt Options) (res Result, err er
 	}
 
 	subPaths := make([]string, len(subs.Written))
+	tracks := make([]Subtitle, len(subs.Written))
 	for i, s := range subs.Written {
 		subPaths[i] = s.Path
+		tracks[i] = Subtitle{Path: s.Path, Language: ffmpeg.LanguageTag(s.Language), Title: s.Title, Position: s.Position}
 	}
 	log.Info("transcode complete",
 		"output", output, "rungs", plan, "duration_sec", math.Round(duration.Seconds()),
 		"thumbnails", thumbs.Count, "sprite_sheets", thumbs.Sheets,
 		"subtitles", subPaths, "subtitles_skipped", len(subs.Skipped),
 		"took_ms", time.Since(start).Milliseconds())
-	return Result{Output: output, Duration: duration, Rungs: written, Poster: ffmpeg.PosterName}, nil
+	return Result{Output: output, Duration: duration, Rungs: written, Poster: ffmpeg.PosterName, Subtitles: tracks}, nil
 }
 
 // checkPaths validates the arguments before any work starts, so a typo fails

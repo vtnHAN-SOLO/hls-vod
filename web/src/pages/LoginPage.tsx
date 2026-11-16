@@ -9,6 +9,7 @@ import { ResendVerification } from "../components/ResendVerification";
 import { Turnstile } from "../components/Turnstile";
 import { describeError } from "../lib/errors";
 import { describeGoogleError } from "../lib/google";
+import { AuthShell } from "../components/AuthShell";
 
 /** A sentence for a refused login. */
 function describeLoginError(err: unknown): string {
@@ -90,15 +91,15 @@ export function LoginPage() {
   };
 
   return (
-    <main className="mx-auto flex max-w-sm flex-col gap-6 px-4 py-16">
-      <h1 className="text-2xl font-semibold">Log in</h1>
+    <AuthShell>
+      <h1 className="text-2xl font-bold">Log in</h1>
       {googleError !== null && error === null && (
-        <p role="alert" className="text-sm text-red-300">
+        <p role="alert" className="text-sm text-danger">
           {googleError}
         </p>
       )}
       {noticeOf(location.state) !== null && error === null && (
-        <p role="status" className="text-sm text-emerald-300">
+        <p role="status" className="text-sm text-success">
           {noticeOf(location.state)}
         </p>
       )}
@@ -115,7 +116,7 @@ export function LoginPage() {
             onChange={(e) => {
               setUsername(e.target.value);
             }}
-            className="rounded-md border border-white/10 bg-neutral-900 px-3 py-2 outline-none focus:border-white/40"
+            className="field h-10"
           />
         </label>
         <label className="flex flex-col gap-1 text-sm">
@@ -129,46 +130,46 @@ export function LoginPage() {
             onChange={(e) => {
               setPassword(e.target.value);
             }}
-            className="rounded-md border border-white/10 bg-neutral-900 px-3 py-2 outline-none focus:border-white/40"
+            className="field h-10"
           />
         </label>
         {captchaNeeded && siteKey !== null && <Turnstile key={attempt} siteKey={siteKey} onToken={setCaptcha} />}
         {error && (
-          <p role="alert" className="text-sm text-red-300">
+          <p role="alert" className="text-sm text-danger">
             {error}
           </p>
         )}
-        <Link to="/forgot-password" className="self-start text-sm text-neutral-400 underline hover:text-white/80">
+        <Link to="/forgot-password" className="self-start text-sm text-fg-muted underline hover:text-fg">
           Forgot password?
         </Link>
         <button
           type="submit"
           disabled={busy || state.status === "unknown"}
-          className="rounded-md bg-white/90 px-3 py-2 font-medium text-neutral-900 hover:bg-white disabled:opacity-50"
+          className="inline-flex h-10 items-center justify-center rounded-lg bg-accent px-4 text-sm font-semibold text-on-accent transition-colors duration-150 hover:bg-accent-hover disabled:opacity-50"
         >
           {busy ? "Logging in…" : "Log in"}
         </button>
       </form>
       {config.data?.google_enabled && (
         <>
-          <p className="text-center text-xs text-neutral-500">or</p>
+          <p className="text-center text-xs text-fg-subtle">or</p>
           <GoogleButton />
         </>
       )}
       {unverified && (
-        <section aria-label="Resend the confirmation mail" className="flex flex-col gap-3 border-t border-white/10 pt-6">
-          <p className="text-sm text-neutral-300">No mail, or the link expired? Send it again:</p>
+        <section aria-label="Resend the confirmation mail" className="flex flex-col gap-3 border-t border-line pt-6">
+          <p className="text-sm text-fg-muted">No mail, or the link expired? Send it again:</p>
           <ResendVerification siteKey={siteKey} />
         </section>
       )}
       {config.data?.registration_open && (
-        <p className="text-sm text-neutral-400">
+        <p className="text-sm text-fg-muted">
           No account?{" "}
-          <Link to="/register" className="underline hover:text-white/80">
+          <Link to="/register" className="underline hover:text-fg">
             Register
           </Link>
         </p>
       )}
-    </main>
+    </AuthShell>
   );
 }

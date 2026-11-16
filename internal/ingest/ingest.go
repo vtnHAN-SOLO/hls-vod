@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/vtnHAN-SOLO/hls-vod/internal/medialayout"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/mediapath"
@@ -20,6 +21,9 @@ import (
 	"github.com/vtnHAN-SOLO/hls-vod/internal/store"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/transcode"
 )
+
+// maxSubtitleLabel bounds a subtitle stream's title, in characters.
+const maxSubtitleLabel = 100
 
 // OptionsFunc builds the pipeline options for (input, output).
 // transcode.DefaultOptions in production; tests shrink posters and sprites.
@@ -84,19 +88,34 @@ func Library(ctx context.Context, log *slog.Logger, mediaRoot, id, version, inpu
 	}
 
 	pub = store.Published{
-		LibraryPath: libRel,
-		PosterPath:  medialayout.InVersion(version, res.Poster),
-		RuntimeSec:  int(math.Round(res.Duration.Seconds())),
-		Renditions:  make([]store.NewRendition, len(res.Rungs)),
+		LibraryPath:  libRel,
+		BackdropPath: medialayout.InVersion(version, res.Poster),
+		RuntimeSec:   int(math.Round(res.Duration.Seconds())),
+		Renditions:   make([]store.NewRendition, len(res.Rungs)),
 	}
 	for i, r := range res.Rungs {
 		pub.Renditions[i] = store.NewRendition{Height: r.Height, BitrateKbps: r.BitrateKbps,
 			PlaylistPath: medialayout.InVersion(version, r.Playlist), SizeBytes: r.SizeBytes}
 	}
+	for _, s := range res.Subtitles {
+		t := model.SubtitleTrack{Path: medialayout.InVersion(version, s.Path), Language: s.Language, Position: s.Position}
+		// The source's own words, shown in the subtitle menu: trimmed and
+		// bounded, never trusted to be short.
+		if title := strings.TrimSpace(s.Title); title != "" {
+			if r := []rune(title); len(r) > maxSubtitleLabel {
+				title = string(r[:maxSubtitleLabel])
+			}
+			t.Label = &title
+		}
+		pub.Subtitles = append(pub.Subtitles, t)
+	}
 	// Everything stored here ends up in a /media/ URL; check it the same way.
-	rels := []string{pub.LibraryPath, pub.PosterPath}
+	rels := []string{pub.LibraryPath, pub.BackdropPath}
 	for _, r := range pub.Renditions {
 		rels = append(rels, r.PlaylistPath)
+	}
+	for _, s := range pub.Subtitles {
+		rels = append(rels, s.Path)
 	}
 	for _, rel := range rels {
 		if _, err := mediapath.Rel(rel); err != nil {

@@ -101,7 +101,7 @@ func run(ctx context.Context, cfg config.API, logger *slog.Logger, ln net.Listen
 	}
 	signup := service.NewRegistration(db, hasher, captcha, mailer, authn, service.RegistrationConfig{
 		Open: cfg.RegistrationOpen, BaseURL: cfg.BaseURL(), TurnstileSiteKey: cfg.TurnstileSiteKey,
-		GoogleEnabled: cfg.GoogleEnabled(),
+		GoogleEnabled: cfg.GoogleEnabled(), SiteName: cfg.SiteName,
 	}, logger)
 	proxies, err := clientip.Parse(cfg.TrustedProxies)
 	if err != nil {
@@ -110,13 +110,13 @@ func run(ctx context.Context, cfg config.API, logger *slog.Logger, ln net.Listen
 	if !proxies.Trusts() {
 		logger.Info("TRUSTED_PROXIES is empty: the client address is the TCP peer, X-Forwarded-For is ignored")
 	}
-	opts := handler.Options{SecureCookies: cfg.SecureCookies(), Admin: service.NewAdmin(db, logger), ClientIP: proxies}
+	opts := handler.Options{SecureCookies: cfg.SecureCookies(), Admin: service.NewAdmin(db, db.Posters(), logger), ClientIP: proxies}
 	if cfg.GoogleEnabled() {
 		// Nothing is fetched from Google until the first sign-in.
 		opts.Google = service.NewGoogle(ctx, db, authn, mailer, service.GoogleConfig{
 			ClientID: cfg.GoogleClientID, ClientSecret: cfg.GoogleClientSecret, Issuer: cfg.GoogleIssuer,
 			RedirectURL: cfg.BaseURL() + "/api/v1/auth/google/callback", BaseURL: cfg.BaseURL(),
-			RegistrationOpen: cfg.RegistrationOpen,
+			RegistrationOpen: cfg.RegistrationOpen, SiteName: cfg.SiteName,
 		}, logger)
 	}
 
@@ -136,7 +136,7 @@ func run(ctx context.Context, cfg config.API, logger *slog.Logger, ln net.Listen
 	)
 
 	srv := &http.Server{
-		Handler:           handler.NewRouter(logger, reg, db, service.NewCatalog(db, media), authn, signup, opts),
+		Handler:           handler.NewRouter(logger, reg, db, service.NewCatalog(db, db.Posters(), media), authn, signup, opts),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,

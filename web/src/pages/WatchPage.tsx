@@ -1,11 +1,14 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef } from "react";
-import { Link, useParams, useSearchParams } from "react-router";
+import { useParams, useSearchParams } from "react-router";
 
-import { getMovie, getPlayback, saveProgress, saveProgressOnExit } from "../api/client";
-import { Player } from "../components/Player";
+import { getMovie, getPlayback, type Playback, saveProgress, saveProgressOnExit } from "../api/client";
+import { type PlaybackUrls, Player } from "../components/player/Player";
+import { ButtonLink } from "../components/ui/Button";
+import { ArrowLeftIcon } from "../components/ui/Icons";
+import { EmptyState, Skeleton } from "../components/ui/Primitives";
 import { describeError } from "../lib/errors";
-import { formatTime } from "../lib/format";
+import { metaParts } from "../lib/movieMeta";
 import { ProgressTracker } from "../lib/progress";
 import { parseStartTime } from "../lib/startTime";
 
@@ -70,10 +73,7 @@ export function WatchPage() {
     gcTime: 0,
   });
 
-  const refreshUrls = useCallback(
-    () => getPlayback(id).then((p) => ({ playlistUrl: p.playlist_url, thumbnailsUrl: p.thumbnails_url })),
-    [id],
-  );
+  const refreshUrls = useCallback(() => getPlayback(id).then(urlsOf), [id]);
 
   const error = playback.error ?? movie.error;
   // ?t= overrides the saved position; null until playback has answered.
@@ -84,47 +84,54 @@ export function WatchPage() {
     movie.data?.runtime_sec ?? null,
   );
 
+  const back = `/movies/${id}`;
   return (
-    <main className="mx-auto flex max-w-6xl flex-col gap-4 p-4 sm:p-6">
-      <Link to={`/movies/${id}`} className="w-fit text-sm text-neutral-400 hover:text-neutral-100">
-        ← Details
-      </Link>
+    <main className="mx-auto flex max-w-[1600px] flex-col gap-5 px-0 py-0 sm:px-6 sm:py-6">
       {error ? (
-        <div className="flex aspect-video w-full items-center justify-center rounded bg-neutral-900 p-6 text-center">
-          <p className="text-neutral-300">{describeError(error)}</p>
+        <div className="px-4 py-16 sm:px-0">
+          <EmptyState title="This movie cannot be played" action={<ButtonLink to={back}>Back to the movie</ButtonLink>}>
+            {describeError(error)}
+          </EmptyState>
         </div>
       ) : playback.data ? (
         <Player
           key={id}
-          playlistUrl={playback.data.playlist_url}
-          thumbnailsUrl={playback.data.thumbnails_url}
-          posterUrl={movie.data?.poster_url ?? null}
+          urls={urlsOf(playback.data)}
+          posterUrl={movie.data?.backdrop_url ?? null}
+          title={movie.data?.title ?? ""}
+          backTo={back}
           startAt={startAt}
+          resumed={fromUrl === null && startAt !== null}
           onTime={tracker.onTime}
           onPause={tracker.onPause}
           refreshUrls={refreshUrls}
         />
       ) : (
-        <div className="aspect-video w-full animate-pulse rounded bg-neutral-900" aria-label="Loading" />
+        <div aria-label="Loading">
+          <Skeleton className="aspect-video w-full sm:rounded-xl" />
+        </div>
       )}
 
       {movie.data && (
-        <header className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold">{movie.data.title}</h1>
-          <p className="text-sm text-neutral-400">
-            {[movie.data.year, movie.data.runtime_sec ? formatTime(movie.data.runtime_sec) : null]
-              .filter((v) => v !== null)
-              .join(" · ")}
-            {startAt !== null && (
-              <span>
-                {" "}
-                · {fromUrl === null ? "resuming" : "starting"} at {formatTime(startAt)}
-              </span>
-            )}
-          </p>
-          {movie.data.overview && <p className="mt-2 max-w-3xl text-neutral-300">{movie.data.overview}</p>}
+        <header className="flex flex-col gap-2 px-4 sm:px-0">
+          <h1 className="text-2xl font-bold sm:text-3xl">{movie.data.title}</h1>
+          <p className="text-sm text-fg-muted">{metaParts(movie.data).join(" · ")}</p>
+          {movie.data.overview && <p className="mt-1 max-w-3xl text-fg-muted">{movie.data.overview}</p>}
+          <ButtonLink to={back} variant="ghost" size="sm" className="mt-2 w-fit">
+            <ArrowLeftIcon size={16} />
+            Movie details
+          </ButtonLink>
         </header>
       )}
     </main>
   );
+}
+
+/** The playback response as the player takes it. */
+function urlsOf(p: Playback): PlaybackUrls {
+  return {
+    playlistUrl: p.playlist_url,
+    thumbnailsUrl: p.thumbnails_url,
+    subtitles: p.subtitles.map((s) => ({ url: s.url, language: s.language, label: s.label })),
+  };
 }

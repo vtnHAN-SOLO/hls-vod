@@ -175,6 +175,7 @@ func TestAdminEndToEnd(t *testing.T) {
 		Scan(&ready); err != nil {
 		t.Fatal(err)
 	}
+	e.db.Publish(t.Context(), t, ready)
 	if err := e.db.Pool.QueryRow(ctx, `
 		WITH m AS (INSERT INTO movies (title, source_path, status) VALUES ('Broken', 'sources/b.mkv', 'failed') RETURNING id)
 		INSERT INTO transcode_jobs (movie_id, status, error_msg) SELECT id, 'failed', 'ffprobe: invalid data' FROM m RETURNING movie_id::text`).
@@ -235,6 +236,7 @@ func TestAdminEndToEnd(t *testing.T) {
 		playing, version); err != nil {
 		t.Fatal(err)
 	}
+	e.db.Publish(t.Context(), t, playing)
 	playlist := func() string {
 		t.Helper()
 		status, pb := getJSON(t, base+"/api/v1/movies/"+playing+"/playback", tk)

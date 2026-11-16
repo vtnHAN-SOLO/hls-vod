@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -22,7 +23,17 @@ type Admin interface {
 	RetryMovie(ctx context.Context, p service.Principal, movieID string) error
 	RetranscodeMovie(ctx context.Context, p service.Principal, movieID string) error
 	DeleteMovie(ctx context.Context, p service.Principal, movieID string) error
+	SetFeatured(ctx context.Context, p service.Principal, movieID string, featured bool) error
+	EditMovie(ctx context.Context, p service.Principal, movieID string, e service.MovieEdit) (model.AdminMovie, error)
+	PublishMovie(ctx context.Context, p service.Principal, movieID string) error
+	UnpublishMovie(ctx context.Context, p service.Principal, movieID string) error
+	UploadPoster(ctx context.Context, p service.Principal, movieID string, data []byte) (model.AdminMovie, error)
+	DeletePoster(ctx context.Context, p service.Principal, movieID string) error
+	RequireAdmin(ctx context.Context, p service.Principal) error
 }
+
+// adminAction is an admin action on one movie.
+type adminAction func(ctx context.Context, p service.Principal, id string) error
 
 // Admin error codes.
 const (
@@ -83,15 +94,20 @@ type jobListJSON struct {
 // status and purpose of its active job (null when none is queued or
 // running), and when its old versions are removed (null when none wait).
 type adminMovieJSON struct {
-	ID                  string     `json:"id"`
-	Title               string     `json:"title"`
-	Year                *int       `json:"year"`
-	Status              string     `json:"status"`
-	ActiveJob           *string    `json:"active_job"`
-	ActiveJobPurpose    *string    `json:"active_job_purpose"`
-	LibraryCleanupAfter *time.Time `json:"library_cleanup_after"`
-	CreatedAt           time.Time  `json:"created_at"`
-	UpdatedAt           time.Time  `json:"updated_at"`
+	ID                  string      `json:"id"`
+	Title               string      `json:"title"`
+	Year                *int        `json:"year"`
+	Overview            *string     `json:"overview"`
+	Status              string      `json:"status"`
+	FeaturedAt          *time.Time  `json:"featured_at"`
+	PublishedAt         *time.Time  `json:"published_at"`
+	Poster              *posterJSON `json:"poster"`
+	BackdropURL         *string     `json:"backdrop_url"`
+	ActiveJob           *string     `json:"active_job"`
+	ActiveJobPurpose    *string     `json:"active_job_purpose"`
+	LibraryCleanupAfter *time.Time  `json:"library_cleanup_after"`
+	CreatedAt           time.Time   `json:"created_at"`
+	UpdatedAt           time.Time   `json:"updated_at"`
 }
 
 type adminMovieListJSON struct {
@@ -101,19 +117,34 @@ type adminMovieListJSON struct {
 	Offset int64            `json:"offset"`
 }
 
-func registerAdmin(mux *http.ServeMux, logger *slog.Logger, protect func(http.Handler) http.Handler, a Admin) {
+func registerAdmin(mux *http.ServeMux, logger *slog.Logger, protect func(http.Handler) http.Handler, a Admin, c Catalog) {
 	mux.Handle("GET /api/v1/admin/users", protect(adminUsers(logger, a)))
 	mux.Handle("POST /api/v1/admin/users/{id}/disable", protect(adminSetDisabled(logger, a, true)))
 	mux.Handle("POST /api/v1/admin/users/{id}/enable", protect(adminSetDisabled(logger, a, false)))
 	mux.Handle("PUT /api/v1/admin/users/{id}/role", protect(adminSetRole(logger, a)))
 	mux.Handle("GET /api/v1/admin/jobs", protect(adminJobs(logger, a)))
-	mux.Handle("GET /api/v1/admin/movies", protect(adminMovies(logger, a)))
+	mux.Handle("GET /api/v1/admin/movies", protect(adminMovies(logger, a, c)))
 	mux.Handle("POST /api/v1/admin/movies/{id}/retry", protect(adminMovieAction(logger, a.RetryMovie)))
 	mux.Handle("POST /api/v1/admin/movies/{id}/retranscode", protect(adminMovieAction(logger, a.RetranscodeMovie)))
 	mux.Handle("DELETE /api/v1/admin/movies/{id}", protect(adminMovieAction(logger, a.DeleteMovie)))
+	mux.Handle("PATCH /api/v1/admin/movies/{id}", protect(adminEditMovie(logger, a, c)))
+	mux.Handle("POST /api/v1/admin/movies/{id}/feature", protect(adminFeature(logger, a, true)))
+	mux.Handle("DELETE /api/v1/admin/movies/{id}/feature", protect(adminFeature(logger, a, false)))
+	mux.Handle("POST /api/v1/admin/movies/{id}/publish", protect(adminNoContent(logger, a.PublishMovie)))
+	mux.Handle("DELETE /api/v1/admin/movies/{id}/publish", protect(adminNoContent(logger, a.UnpublishMovie)))
+	mux.Handle("PUT /api/v1/admin/movies/{id}/poster", protect(adminUploadPoster(logger, a, c)))
+	mux.Handle("DELETE /api/v1/admin/movies/{id}/poster", protect(adminNoContent(logger, a.DeletePoster)))
+}
+
+// publishRefusals are the messages of a refused publish, by reason code.
+var publishRefusals = map[string]string{
+	service.ReasonNotReady:        "only a ready movie can be published",
+	service.ReasonMissingPoster:   "upload a poster before publishing",
+	service.ReasonMissingOverview: "write a description before publishing",
 }
 
 func writeAdminError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error) {
+	var refused *service.PublishRefusedError
 	switch {
 	case errors.Is(err, service.ErrUserNotFound):
 		writeError(w, http.StatusNotFound, codeNotFound, "user not found")
@@ -127,6 +158,14 @@ func writeAdminError(w http.ResponseWriter, r *http.Request, logger *slog.Logger
 		writeError(w, http.StatusConflict, codeJobActive, "the movie has a queued or running transcode job")
 	case errors.Is(err, service.ErrNotReadyForRetranscode):
 		writeError(w, http.StatusConflict, codeNotReady, "only a ready movie can be retranscoded")
+	case errors.Is(err, service.ErrNotReadyForFeature):
+		writeError(w, http.StatusConflict, codeNotReady, "only a ready movie can be featured")
+	case errors.Is(err, service.ErrNotPublishedForFeature):
+		writeError(w, http.StatusConflict, codeNotPublished, "only a published movie can be featured: publish it first")
+	case errors.Is(err, service.ErrMoviePublished):
+		writeError(w, http.StatusConflict, codeMoviePublished, "the movie is published: unpublish it first")
+	case errors.As(err, &refused):
+		writeError(w, http.StatusConflict, refused.Reason, publishRefusals[refused.Reason])
 	default:
 		writeServiceError(w, r, logger, err)
 	}
@@ -240,7 +279,7 @@ func adminJobs(logger *slog.Logger, a Admin) http.HandlerFunc {
 	}
 }
 
-func adminMovies(logger *slog.Logger, a Admin) http.HandlerFunc {
+func adminMovies(logger *slog.Logger, a Admin, c Catalog) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		page, vals, err := adminParams(r, "status", "q")
 		if err != nil {
@@ -254,22 +293,83 @@ func adminMovies(logger *slog.Logger, a Admin) http.HandlerFunc {
 		}
 		out := adminMovieListJSON{Items: make([]adminMovieJSON, 0, len(res.Movies)), Total: res.Total, Limit: res.Limit, Offset: res.Offset}
 		for _, m := range res.Movies {
-			var job, purpose *string
-			if m.ActiveJob != nil && m.ActiveJobPurpose != nil {
-				s, p := string(*m.ActiveJob), string(*m.ActiveJobPurpose)
-				job, purpose = &s, &p
-			}
-			out.Items = append(out.Items, adminMovieJSON{ID: m.ID, Title: m.Title, Year: m.Year, Status: string(m.Status),
-				ActiveJob: job, ActiveJobPurpose: purpose, LibraryCleanupAfter: utc(m.LibraryCleanupAfter),
-				CreatedAt: m.CreatedAt.UTC(), UpdatedAt: m.UpdatedAt.UTC()})
+			out.Items = append(out.Items, toAdminMovieJSON(c, m))
 		}
 		writeAdminJSON(w, out)
 	}
 }
 
+// toAdminMovieJSON signs the poster and backdrop URLs: an admin may see
+// every movie.
+func toAdminMovieJSON(c Catalog, m model.AdminMovie) adminMovieJSON {
+	var job, purpose *string
+	if m.ActiveJob != nil && m.ActiveJobPurpose != nil {
+		s, p := string(*m.ActiveJob), string(*m.ActiveJobPurpose)
+		job, purpose = &s, &p
+	}
+	return adminMovieJSON{ID: m.ID, Title: m.Title, Year: m.Year, Overview: m.Overview, Status: string(m.Status),
+		FeaturedAt: utc(m.FeaturedAt), PublishedAt: utc(m.PublishedAt),
+		Poster: toPosterJSON(c.Poster(m.Movie)), BackdropURL: c.BackdropURL(m.Movie), ActiveJob: job, ActiveJobPurpose: purpose,
+		LibraryCleanupAfter: utc(m.LibraryCleanupAfter), CreatedAt: m.CreatedAt.UTC(), UpdatedAt: m.UpdatedAt.UTC()}
+}
+
+// optional is a JSON field of a partial update. UnmarshalJSON runs only for
+// a key that is present, so Set tells "absent" from null.
+type optional[T any] struct {
+	Set   bool
+	Value *T
+}
+
+func (o *optional[T]) UnmarshalJSON(b []byte) error {
+	o.Set = true
+	return json.Unmarshal(b, &o.Value)
+}
+
+func (o optional[T]) service() service.Optional[T] {
+	return service.Optional[T]{Set: o.Set, Value: o.Value}
+}
+
+type movieEditRequest struct {
+	Title    optional[string] `json:"title"`
+	Year     optional[int64]  `json:"year"`
+	Overview optional[string] `json:"overview"`
+}
+
+// maxMovieEditBody fits a 2000-character overview of 4-byte characters,
+// escaped.
+const maxMovieEditBody = 64 << 10
+
+func adminEditMovie(logger *slog.Logger, a Admin, c Catalog) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req movieEditRequest
+		if !decodeJSONMax(w, r, &req, `body must be {"title"?: string, "year"?: integer | null, "overview"?: string | null}`, maxMovieEditBody) {
+			return
+		}
+		m, err := a.EditMovie(r.Context(), principal(r), r.PathValue("id"), service.MovieEdit{
+			Title: req.Title.service(), Year: req.Year.service(), Overview: req.Overview.service(),
+		})
+		if err != nil {
+			writeAdminError(w, r, logger, err)
+			return
+		}
+		writeAdminJSON(w, toAdminMovieJSON(c, m))
+	}
+}
+
+func adminFeature(logger *slog.Logger, a Admin, featured bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := a.SetFeatured(r.Context(), principal(r), r.PathValue("id"), featured); err != nil {
+			writeAdminError(w, r, logger, err)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // adminMovieAction answers 202: a retry or retranscode is queued, a delete
 // is finished by the watcher.
-func adminMovieAction(logger *slog.Logger, act func(ctx context.Context, p service.Principal, id string) error) http.HandlerFunc {
+func adminMovieAction(logger *slog.Logger, act adminAction) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := act(r.Context(), principal(r), r.PathValue("id")); err != nil {
 			writeAdminError(w, r, logger, err)
