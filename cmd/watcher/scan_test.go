@@ -111,6 +111,23 @@ func TestWatcher(t *testing.T) {
 		return out
 	}
 
+	t.Run("an empty media root gets inbox/, sources/ and library/", func(t *testing.T) {
+		dir := t.TempDir()
+		root, err := mediapath.Open(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = root.Close() })
+		if _, err := newScanner(env{dir, root}, st).run(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range []string{medialayout.Inbox, medialayout.Sources, medialayout.Library} {
+			if fi, err := os.Stat(filepath.Join(dir, d)); err != nil || !fi.IsDir() {
+				t.Errorf("%s/: %v", d, err)
+			}
+		}
+	})
+
 	t.Run("claims eligible files and titles them from the original name", func(t *testing.T) {
 		e := setup(t)
 		inbox := filepath.Join(e.dir, medialayout.Inbox)

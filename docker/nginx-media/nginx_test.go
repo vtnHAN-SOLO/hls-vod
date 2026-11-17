@@ -26,8 +26,13 @@ import (
 	"github.com/vtnHAN-SOLO/hls-vod/internal/service"
 )
 
-// image must match the media-delivery tag in docker-compose.yml.
-const image = "nginxinc/nginx-unprivileged:1.30.6-alpine3.24"
+// image is the base of docker/media-delivery.Dockerfile, tag and digest:
+// keep the two in sync. The test mounts the template and the guard into the
+// base image instead of building the image, so it runs in go test alone.
+const image = "nginxinc/nginx-unprivileged:1.30.6-alpine3.24@sha256:f5116ed4606f3eb015dd4a8e28cb9b351476dc0ad4bc6e9f93b19cec130cdf03"
+
+// user is the media-delivery image's USER.
+const user = "65532:65532"
 
 const (
 	movieID = "0b9d6b52-2d2c-4a7b-9e0e-6a4f39a0c1d2"
@@ -47,8 +52,8 @@ func randomKey(t *testing.T) string {
 }
 
 // confTmpfs is the writable /etc/nginx/conf.d the template is rendered into,
-// owned by the image's nginx user (uid 101), as in docker-compose.yml.
-const confTmpfs = "rw,mode=0755,uid=101,gid=101"
+// owned by the image's user (65532), as in docker-compose.yml.
+const confTmpfs = "rw,mode=0755,uid=65532,gid=65532"
 
 // nginxOptions mounts the template and the key guard and passes env, as
 // docker-compose.yml does.
@@ -69,6 +74,7 @@ func nginxOptions(t *testing.T, env map[string]string, binds []string, confMode 
 		testcontainers.WithExposedPorts("8080/tcp"),
 		testcontainers.WithEnv(env),
 		testcontainers.WithTmpfs(map[string]string{"/tmp": "rw", "/etc/nginx/conf.d": confMode}),
+		testcontainers.WithConfigModifier(func(c *container.Config) { c.User = user }),
 		testcontainers.WithHostConfigModifier(func(hc *container.HostConfig) {
 			hc.Binds = append(mounts, binds...)
 			hc.ReadonlyRootfs = true
@@ -124,10 +130,10 @@ func library(t *testing.T) (lib, secretFile string) {
 	}
 	for name, body := range files {
 		p := filepath.Join(movie, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil { // #nosec G301 -- nginx (uid 101) must traverse the fixture
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil { // #nosec G301 -- nginx (uid 65532) must traverse the fixture
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(p, []byte(body), 0o644); err != nil { // #nosec G306 -- nginx (uid 101) must read the fixture
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil { // #nosec G306 -- nginx (uid 65532) must read the fixture
 			t.Fatal(err)
 		}
 	}
@@ -137,7 +143,7 @@ func library(t *testing.T) (lib, secretFile string) {
 	}
 	for _, d := range []string{lib, movie, filepath.Join(movie, "720p"), filepath.Join(movie, "subs"),
 		filepath.Join(lib, "."+movieID+".partial-1")} {
-		if err := os.Chmod(d, 0o755); err != nil { // #nosec G302 -- nginx (uid 101) must traverse the fixture
+		if err := os.Chmod(d, 0o755); err != nil { // #nosec G302 -- nginx (uid 65532) must traverse the fixture
 			t.Fatal(err)
 		}
 	}
@@ -416,7 +422,7 @@ func TestMediaDelivery(t *testing.T) {
 // stays up: restarting nginx would not fix a mount.
 func TestReadinessFollowsTheMount(t *testing.T) {
 	// t.TempDir is 0775; make it private to the test user. nginx runs as
-	// uid 101 and so can no longer open it.
+	// uid 65532 and so can no longer open it.
 	unreadable := t.TempDir()
 	if err := os.Chmod(unreadable, 0o700); err != nil { // #nosec G302 -- a directory needs x; 0700 is the most private mode that is still a usable dir
 		t.Fatal(err)

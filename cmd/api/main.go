@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
 	"github.com/vtnHAN-SOLO/hls-vod/internal/auth"
+	"github.com/vtnHAN-SOLO/hls-vod/internal/buildinfo"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/clientip"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/config"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/handler"
@@ -28,6 +29,7 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	buildinfo.LogStart(logger, "api")
 
 	cfg, err := config.Load[config.API]()
 	if err == nil {
@@ -133,6 +135,7 @@ func run(ctx context.Context, cfg config.API, logger *slog.Logger, ln net.Listen
 	reg.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		buildinfo.Collector(),
 	)
 
 	srv := &http.Server{
@@ -175,6 +178,10 @@ func run(ctx context.Context, cfg config.API, logger *slog.Logger, ln net.Listen
 // configured (MAIL_FROM and PUBLIC_BASE_URL are needed for any mail; config
 // requires them while registration is open).
 func newOutbox(ctx context.Context, cfg config.API, db *store.Store, logger *slog.Logger) *mail.Outbox {
+	if cfg.MailBackend == config.MailBackendNone {
+		logger.Info("MAIL_BACKEND=none: no mail will be sent")
+		return nil
+	}
 	if cfg.MailFrom == "" || cfg.PublicBaseURL == "" {
 		logger.Info("mail not configured: no mail will be sent")
 		return nil

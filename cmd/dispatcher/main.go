@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/vtnHAN-SOLO/hls-vod/internal/buildinfo"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/config"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/dispatch"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/handler"
@@ -49,6 +50,7 @@ func main() {
 
 func realMain() int {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	buildinfo.LogStart(logger, "dispatcher")
 
 	cfg, err := config.Load[config.Dispatcher]()
 	if err == nil {
@@ -89,7 +91,8 @@ func run(ctx context.Context, cfg config.Dispatcher, logger *slog.Logger, ln net
 	}
 
 	reg := prometheus.NewRegistry()
-	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
+	reg.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		buildinfo.Collector())
 	d := &dispatch.Dispatcher{
 		Store: db, Backend: backend, Log: logger,
 		MaxConcurrent: cfg.MaxConcurrent, Deadline: cfg.JobDeadline, StartGrace: startGrace,

@@ -1,0 +1,35 @@
+# One host for the whole site; the ingress controller (Traefik, class
+# "traefik") splits it by path. /metrics, /healthz and /readyz are never
+# routed: the api's and media-delivery's live at the root of their own
+# server, outside /api and /media, and web answers its probes only to
+# requests that did not come through a proxy (docker/web/default.conf).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hls-vod
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  name: http
+          - path: /media
+            pathType: Prefix
+            backend:
+              service:
+                name: media-delivery
+                port:
+                  name: http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  name: http

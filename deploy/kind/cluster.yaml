@@ -1,0 +1,17 @@
+# The local cluster (make kind-up): one node, kind's default CNI (kindnet).
+# The node image is pinned by digest (the default of the pinned kind
+# release). Host port 8080, on 127.0.0.1 only, reaches the ingress
+# controller's NodePort 30080: http://localhost:8080 is the whole site.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  # TRUSTED_PROXIES in deploy/overlays/local names this range.
+  podSubnet: 10.244.0.0/16
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 8080
+        listenAddress: 127.0.0.1
+        protocol: TCP

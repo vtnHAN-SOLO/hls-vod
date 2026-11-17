@@ -89,7 +89,10 @@ const (
 // every file has been tried.
 func (s *scanner) run(ctx context.Context) (report, error) {
 	var r report
-	for _, d := range []string{medialayout.Inbox, medialayout.Sources} {
+	// The three top-level folders, so an empty media volume (a new cluster)
+	// becomes a valid tree on the first run: media-delivery's readiness
+	// lists library/, which no transcode has created yet.
+	for _, d := range []string{medialayout.Inbox, medialayout.Sources, medialayout.Library} {
 		if err := s.root.MkdirAll(d, 0o755); err != nil { // #nosec G301 -- the transcoder and nginx run as other UIDs
 			return r, fmt.Errorf("creating %s/: %w", d, err)
 		}

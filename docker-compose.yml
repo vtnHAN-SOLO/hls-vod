@@ -23,30 +23,27 @@ services:
 
   # Serves $MEDIA_ROOT/library/{id}/... at
   # http://127.0.0.1:8081/media/{token}/{expires}/{id}/..., to URLs the api
-  # signed with MEDIA_SIGNING_KEY. Hardened like production: read-only root
-  # filesystem (only /tmp and the rendered config dir are writable), no
-  # capabilities, library mounted read-only.
+  # signed with MEDIA_SIGNING_KEY. The image is docker/media-delivery.Dockerfile
+  # (the config template and the key guard baked in); `make media-up`
+  # rebuilds it. Hardened like production: read-only root filesystem (only
+  # /tmp and the rendered config dir are writable), no capabilities, UID
+  # 65532, library mounted read-only.
   media-delivery:
-    image: nginxinc/nginx-unprivileged:1.30.6-alpine3.24 # keep in sync with docker/nginx-media/nginx_test.go
+    build:
+      context: .
+      dockerfile: docker/media-delivery.Dockerfile
+    # Named, so compose never tags its build "latest"; make images builds
+    # hls-vod/media-delivery:dev separately.
+    image: hls-vod/media-delivery:local
     ports:
       # 127.0.0.1 only (see postgres). 8080 on the host is the api.
       - "127.0.0.1:8081:8080"
     # The signing key only, taken from .env; no value is written here. Not
     # env_file: that would hand nginx DATABASE_URL and every other secret in
-    # .env. The image renders /etc/nginx/templates/*.template with it at
-    # start; the filter keeps nginx's own $variables untouched.
+    # .env. The image renders its template with it at start.
     environment:
       MEDIA_SIGNING_KEY: ${MEDIA_SIGNING_KEY:?set MEDIA_SIGNING_KEY in .env, generate it with openssl rand -base64 48}
-      NGINX_ENVSUBST_FILTER: ^MEDIA_SIGNING_KEY$$
     volumes:
-      - type: bind
-        source: ./docker/nginx-media/default.conf.template
-        target: /etc/nginx/templates/default.conf.template
-        read_only: true
-      - type: bind
-        source: ./docker/nginx-media/05-require-media-signing-key.sh
-        target: /docker-entrypoint.d/05-require-media-signing-key.sh
-        read_only: true
       - type: bind
         source: ${MEDIA_ROOT:?set MEDIA_ROOT in .env, e.g. ./var/media}/library
         target: /srv/media/library
@@ -57,8 +54,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-      # The rendered config (it holds the key): memory only, owned by nginx.
-      - /etc/nginx/conf.d:mode=0755,uid=101,gid=101
+      # The rendered config (it holds the key): memory only, owned by the image user.
+      - /etc/nginx/conf.d:mode=0755,uid=65532,gid=65532
     cap_drop:
       - ALL
     security_opt:

@@ -179,10 +179,12 @@ One Go module at the root. Binaries under `cmd/`, shared code under `internal/`.
 ├── cmd/
 │   ├── api/main.go
 │   ├── dispatcher/           # long-running: claims queued jobs, starts and watches transcoders
+│   ├── migrate/              # up | status over the embedded migrations (goose library, session lock)
 │   ├── useradmin/            # add / set-password / set-role / list; the password never in argv or env
 │   ├── transcoder/           # --movie-id job mode + --input/--output; the pipeline is internal/transcode
 │   └── watcher/              # one scan per run: claim inbox files, queue jobs, repair crashes
 ├── internal/
+│   ├── buildinfo/            # the version stamped by -ldflags; the start line and build_info
 │   ├── config/               # env loading, fails fast on missing secrets
 │   ├── handler/              # HTTP handlers, thin
 │   ├── service/              # business logic
@@ -209,17 +211,27 @@ One Go module at the root. Binaries under `cmd/`, shared code under `internal/`.
 │   ├── hooks/pre-commit      # gitleaks on staged changes
 │   ├── install-hooks.sh      # .git/hooks is not tracked — restore after clone
 │   ├── check-media-delivery.sh # `make media-check`: signs its own URLs; tokens, headers, probes, path traversal
+│   ├── images-smoke.sh       # `make images-smoke`: runs the built images hardened and checks them
 │   ├── demo-seed.sh          # `make demo-seed`: 8 synthetic ffmpeg clips with invented titles (two with subtitles), a poster cut from a frame of each, ingested ready and published
+│   ├── kind-up.sh            # `make kind-up`: the local kind cluster, its secrets, the overlay, the admin user
+│   ├── kind-smoke.sh         # `make kind-smoke`: ingest, publish and play a clip in the cluster; PSS, RBAC, HPA, NetworkPolicy
+│   ├── kind-down.sh          # `make kind-down`
+│   ├── install-kubectl.sh    # `make kind-tools`: the pinned kubectl, checksum verified
+├── .dockerignore             # an ALLOWLIST of what the image builds may read
 ├── docker/
-│   ├── nginx-media/          # media-delivery conf template, key guard + their testcontainers test
-│   ├── api.Dockerfile        # planned
-│   └── transcoder.Dockerfile # planned
+│   ├── Dockerfile            # Go: one build stage; targets app (api, dispatcher, watcher,
+│   │                         #   useradmin, migrate) and transcoder (+ static ffmpeg 8.1)
+│   ├── web.Dockerfile        # Node build → nginx-unprivileged serving the SPA
+│   ├── media-delivery.Dockerfile # nginx-unprivileged + the template and key guard below
+│   ├── web/default.conf      # the web image's nginx server (SPA fallback, cache, headers, probes)
+│   └── nginx-media/          # media-delivery conf template, key guard + their testcontainers test
 ├── docs/
 │   ├── architecture/         # 4+1 views (logical, process, development, physical, scenarios) + ADRs
 │   ├── screenshots/          # WebP screenshots of demo-seed content (desktop 1440, mobile 390)
 │   └── openapi.yaml          # API contract, validated against handler tests; source of web types
 ├── web/                      # React SPA, own toolchain (pnpm pinned via "packageManager")
-│   ├── security-headers.json # the SPA's CSP and other headers: vite preview now, the web nginx in the cluster
+│   ├── security-headers.json # the SPA's CSP and other headers: vite preview, and the web image's
+│   │                         #   nginx (scripts/nginx-headers.mjs generates its include at build)
 │   └── src/
 │       ├── api/              # schema.ts generated from docs/openapi.yaml (`gen:api`) + client
 │       ├── auth/             # AuthProvider, RequireAuth (routes other than the public ones
@@ -231,11 +243,13 @@ One Go module at the root. Binaries under `cmd/`, shared code under `internal/`.
 │       ├── components/           # ui/: the design system's shared components
 │       └── lib/              # pure logic with vitest tests
 ├── var/media/                # local MEDIA_ROOT (inbox/, sources/, library/), gitignored
+├── var/kind/                 # make kind-up: the cluster's kubeconfig, the admin password; gitignored
+├── deploy/
+│   ├── base/                 # Kustomize base: every workload, RBAC, NetworkPolicies, Ingress
+│   ├── overlays/local/       # kind: :dev images never pulled, media PVC, no mail
+│   └── kind/                 # cluster.yaml, Traefik, metrics-server (vendored release)
 │
 │   # Planned, not created yet:
-├── deploy/
-│   ├── base/                 # Kustomize base
-│   ├── overlays/local/
 └── .github/workflows/
 ```
 
@@ -789,16 +803,88 @@ and thumbnails included). `/healthz` and `/readyz` stay unsigned.
 
 ### Containers
 
-- Multi-stage builds, `scratch` or `distroless` final image for Go
-- Non-root user, read-only root filesystem
+Four images, built by `make images` for linux/amd64 and tagged `hls-vod/<name>:dev`; checked by
+`make images-smoke` (not part of `make check`: it needs the built images and the compose
+Postgres).
+
+| Image | Dockerfile | Base | Holds |
+|---|---|---|---|
+| `app` | `docker/Dockerfile`, target `app` | `gcr.io/distroless/static-debian13:nonroot` | api, dispatcher, watcher, useradmin, migrate in `/usr/local/bin`. **No ENTRYPOINT or CMD**: each workload names its command (`/usr/local/bin/api`, …) |
+| `transcoder` | `docker/Dockerfile`, target `transcoder` | the same | transcoder (ENTRYPOINT; the Job passes only `--movie-id`), `ffmpeg` and `ffprobe` 8.1 from `mwader/static-ffmpeg`, found through `PATH=/usr/local/bin` |
+| `web` | `docker/web.Dockerfile` | `node` (build) → `nginxinc/nginx-unprivileged` | the built SPA in `/srv/web`, `docker/web/default.conf`, headers generated from `web/security-headers.json` |
+| `media-delivery` | `docker/media-delivery.Dockerfile` | `nginxinc/nginx-unprivileged` (the tag and digest `nginx_test.go` uses: keep in sync) | the template and the key guard of `docker/nginx-media/`; the key only from the environment, rendered into a writable `/etc/nginx/conf.d` (tmpfs / emptyDir owned by 65532) |
+
+- Every image runs as `USER 65532:65532`, works with a read-only root filesystem and only `/tmp`
+  writable (plus `/etc/nginx/conf.d` for media-delivery), with all capabilities dropped. The Go
+  images have no shell and no package manager. Why distroless and not scratch: CA certificates
+  (Resend, Google, Turnstile), tzdata, a nonroot user and `/tmp`
+- **Every `FROM` is pinned by tag and digest** (`image:tag@sha256:…`), and so is the hadolint
+  image; update both together, to a tag at least 14 days old (`docker buildx imagetools
+  inspect`). No `latest` tags anywhere, no floating majors. Kubernetes manifests pin the digest
+  too. Local builds are named (`hls-vod/media-delivery:local` in compose), never left as latest
+- The Go build stage builds every binary in one `go build` (`CGO_ENABLED=0`, `-trimpath`, `-s -w`,
+  BuildKit cache mounts, `TARGETOS`/`TARGETARCH`; nothing assumes amd64). `VERSION` (the git
+  commit, `-dirty` for a dirty tree) goes into `internal/buildinfo.Version`: every binary logs it
+  in its first line, the api and the dispatcher expose `build_info{version}` on `/metrics`. The
+  transcoder, a run-to-completion Job with no HTTP listener, only logs it
+- OCI labels: `org.opencontainers.image.version` and `.revision`, nothing else (the nginx bases'
+  own labels are blanked). No repository URL, no secret in any build arg, layer or label
+- `.dockerignore` is an allowlist: `.env`, `web/.env.local`, `var/`, media files, `.git`,
+  `node_modules`, `bin/` and `web/dist` never enter the build context
+- The web image's nginx: unknown paths → `/index.html`, but a missing file under `/assets/` is a
+  plain-text 404 (never HTML where a script is expected); `/assets/*` `public, max-age=31536000,
+  immutable`, `index.html` and routes `no-cache`, favicon / logos / manifest a day. nginx drops a
+  parent's `add_header` lines in any location that adds its own, so every such location includes
+  the generated header file. `/healthz` and `/readyz` (200, not logged), `stub_status` on
+  `127.0.0.1:8082` only, `server_tokens off`, gzip
+- The transcoder image contains GPL components (libx264 in the static ffmpeg): publishing it
+  would carry the GPL's obligations. We build the images; we do not publish them
+- hadolint lints the three Dockerfiles in `make check`
 - Listen on `8080` (see hard constraint 9)
-- No `latest` tags anywhere — and no floating major tags like `postgres:16` either; pin a
-  patch version (`postgres:16.x-alpine`). Kubernetes manifests additionally pin the digest
 - Transcoder Jobs are built in code (`internal/dispatch`), not by manifests, so everything in
   their spec comes from the dispatcher's environment: resources (`TRANSCODER_CPU_REQUEST` /
   `_LIMIT`, `TRANSCODER_MEMORY_REQUEST` / `_LIMIT`, default cpu 2 / 4, memory 1Gi / 2Gi,
   parsed at start-up), a dedicated `TRANSCODER_SERVICE_ACCOUNT` with no RBAC (token never
   mounted), and the optional `IMAGE_PULL_SECRET` for the private GHCR images
+
+### Kubernetes
+
+Kustomize under `deploy/`: `base/` holds every workload and is the same for every environment
+(no domain, address, storage class or secret value); an overlay adds those. `overlays/local/`
+is the kind cluster of `make kind-up`.
+
+- Namespace `hls-vod`, Pod Security Standards `restricted` enforced (audit and warn too). Every
+  pod: `runAsNonRoot`, UID 65532 (Postgres: its image's UID 70), read-only root filesystem,
+  `allowPrivilegeEscalation: false`, drop ALL, seccomp `RuntimeDefault`, requests and limits,
+  writable paths as emptyDirs. `automountServiceAccountToken: false` everywhere except the
+  dispatcher
+- Workloads: `api` (2, init container `migrate up`), `web` (2), `media-delivery` (HPA 2-5 on
+  CPU 70 %, the media volume read-only, conf.d an in-memory emptyDir), both nginx tiers with a
+  pinned `nginx-prometheus-exporter` sidecar on the loopback stub_status; `dispatcher` (1, Role:
+  `jobs` create/get/list/watch/delete in its namespace, nothing else); CronJob `watcher` (*/5,
+  Forbid); StatefulSet `postgres` (1, PVC). Pods are selected by their `app` label; the
+  transcoder Jobs' pods carry `app=transcoder` (`internal/dispatch`)
+- Config: one generated ConfigMap `hls-vod-config` for non-secret env (envFrom), merged by the
+  overlay (TRUSTED_PROXIES, REGISTRATION_OPEN, MAIL_BACKEND, SITE_NAME). Secrets by name only:
+  `hls-vod-postgres`, `hls-vod-db` (DATABASE_URL), `hls-vod-api` (JWT and media signing keys;
+  media-delivery reads only MEDIA_SIGNING_KEY). `hls-vod-transcoder-image` holds
+  TRANSCODER_IMAGE, name@digest, written by whoever deploys (the dispatcher refuses a tag)
+- Ingress (class `traefik`): `/api` → api, `/media` → media-delivery, `/` → web. `/metrics`,
+  `/healthz`, `/readyz` are never routed: the api's and media-delivery's are outside their
+  prefixes, and web answers its probes with 404 to any request carrying X-Forwarded-For
+- NetworkPolicies: default deny both ways; DNS to kube-dns; the `traefik` namespace → web, api,
+  media-delivery on 8080; api, dispatcher, watcher, transcoder, useradmin ↔ postgres 5432; api
+  egress 443; dispatcher egress 443/6443 (the Kubernetes API). kind's CNI (kindnet) enforces
+  them: `make kind-smoke` proves a pod labelled like web cannot reach Postgres
+- Every image and tool pinned: images by tag and digest, kind and kubectl by version (`make
+  kind-tools`, part of `make setup`). `make check` renders every kustomization and validates it
+  with kubeconform (pinned image, strict, the node's Kubernetes version)
+- kind (`make kind-up`): kubeconfig in `var/kind/kubeconfig`, never `~/.kube/config`. Secrets
+  generated with `openssl rand` and piped to kubectl (never argv, never a file); the admin
+  password once into `var/kind/admin-password`. `MAIL_BACKEND=none` (no mail service; the api
+  refuses it while registration is open). Media is a PVC on kind's local-path class
+  (ReadWriteOnce, one node); production uses NFS ReadWriteMany. Host port 127.0.0.1:8080 is
+  the ingress, so `make run` cannot run at the same time
 
 ### Local dev (docker compose)
 
@@ -849,6 +935,8 @@ That target must run, in order:
 | Secrets | `gitleaks detect --source . --no-banner` | find nothing |
 | Go vulns | `govulncheck ./...` | no known-exploitable |
 | Static security | `gosec -quiet ./...` | no findings |
+| Dockerfiles | hadolint (pinned image) on `docker/*Dockerfile` | no findings |
+| Manifests | `make manifests`: `kubectl kustomize` of `deploy/base`, `deploy/overlays/local`, `deploy/kind/metrics-server` (+ `deploy/kind/traefik.yaml`) through kubeconform (pinned image) `-strict` | valid |
 | Frontend | `make frontend`: web scripts `gen:api:check`, `lint`, `typecheck`, `test` | pass; generated API types must match `docs/openapi.yaml` |
 
 ### Secret hygiene, every single change
@@ -865,7 +953,9 @@ If a value is needed to make something runnable locally, add the variable name t
 
 ### Tooling (already in place)
 
-- `make setup` installs dev tools at **pinned versions**, never `@latest`, then the hook
+- `make setup` installs dev tools at **pinned versions**, never `@latest` (kind and kubectl
+  too, through `make kind-tools`), then the hook, and pulls the hadolint image (pinned by
+  digest; `make check` runs it and kubeconform with Docker)
 - Hook source lives in `scripts/hooks/pre-commit`; `scripts/install-hooks.sh` copies it into
   `.git/hooks/` with mode `0755`. `.git/hooks/` is not tracked, so `make setup` restores it
   after a fresh clone
@@ -918,9 +1008,9 @@ If a merged change turns out wrong, undo it with `git revert`, never by rewritin
 ## Commands
 
 ```bash
-make setup          # install dev tools + git hooks, verify ffmpeg/ffprobe and node/corepack, install web deps (run after a fresh clone)
+make setup          # install dev tools (kind, kubectl too) + git hooks, verify ffmpeg/ffprobe and node/corepack, install web deps (run after a fresh clone)
 make check          # the full gate — see Definition of done
-make build          # build all binaries into bin/
+make build          # build all binaries into bin/ (version stamped from git)
 make run            # api against the compose Postgres (loads .env). Registration locally:
                     # MAIL_BACKEND=log prints the verify link in this log; Cloudflare's test
                     # Turnstile keys always pass; PUBLIC_BASE_URL=http://127.0.0.1:5173.
@@ -929,7 +1019,8 @@ make run            # api against the compose Postgres (loads .env). Registratio
 
 # Local dev stack — make targets load .env, so no manual `source .env`
 make db-up          # docker compose up -d, waits for the healthcheck
-make migrate        # goose up against $DATABASE_URL
+make migrate        # goose up against $DATABASE_URL (the goose CLI; the cluster runs the
+                    # app image's /usr/local/bin/migrate up, same embedded files)
 make migrate-down   # goose down one step
 make db-down        # docker compose down (keeps the volume)
 
@@ -973,12 +1064,29 @@ make dev-ingest INPUT=~/Videos/movie.mp4 TITLE="My test" [YEAR=2020] [OVERVIEW="
 # Writes to $MEDIA_ROOT and the compose Postgres; running it twice adds them twice
 make demo-seed
 
-# media-delivery (nginx) on 127.0.0.1:8081: /media/{token}/{expires}/{id}/... serves
+# Container images: the four images for linux/amd64 as hls-vod/<name>:dev, with VERSION (git
+# commit) and the web brand; then run them hardened and check them (needs make db-up && make
+# migrate; migrate status only reads). Prints the image sizes. Not part of make check
+make images
+make images-smoke
+
+# media-delivery (nginx) on 127.0.0.1:8081, built from docker/media-delivery.Dockerfile
+# (make media-up rebuilds it): /media/{token}/{expires}/{id}/... serves
 # $MEDIA_ROOT/library/{id}/... Needs MEDIA_SIGNING_KEY in .env (openssl rand -base64 48), the
 # same value the api uses; after changing it, re-run `make media-up` and restart `make run`
 make media-up
 make media-check MOVIE=<id> [VERSION=<folder>]  # probes, MIME, cache, CORS, path traversal;
                                                 # VERSION defaults to the newest version folder
+
+# Local Kubernetes (kind): the whole stack from the make images images on http://localhost:8080
+# (127.0.0.1 only; stop make run first, it uses the same port). Again after make images: the new
+# images are loaded and rolled out; secrets, database and admin are kept
+make kind-up        # prints the admin password (also in var/kind/admin-password)
+make kind-smoke     # 11 steps: workloads, site, login, clip ingested and published, playback,
+                    # PSS, RBAC, HPA, NetworkPolicy, a 25 MP poster without an api restart.
+                    # The movie stays, to play in the browser
+make kind-down      # deletes the cluster and var/kind/
+export KUBECONFIG=$PWD/var/kind/kubeconfig   # kubectl against it
 
 # Deploy — never kubectl apply directly, Flux owns the cluster
 git push                                           # Flux reconciles within ~1 min

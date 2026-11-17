@@ -1,0 +1,52 @@
+# The base: every environment's workloads, generic. Nothing here names a
+# domain, an address, a storage class or a secret value; an overlay adds
+# those (deploy/overlays/local for kind).
+#
+# Secrets are referenced by name only. Each environment creates them:
+#   hls-vod-postgres  POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+#   hls-vod-db        DATABASE_URL (the api, dispatcher, watcher; the
+#                     dispatcher passes the same name/key to transcoder Jobs)
+#   hls-vod-api       JWT_SIGNING_KEY, MEDIA_SIGNING_KEY (media-delivery
+#                     reads MEDIA_SIGNING_KEY only)
+# and one ConfigMap the overlay cannot know in advance:
+#   hls-vod-transcoder-image  TRANSCODER_IMAGE (name@sha256:…, the dispatcher
+#                     refuses an image without a digest)
+# The media volume is the PersistentVolumeClaim "media", also the overlay's.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: hls-vod
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: hls-vod
+
+resources:
+  - namespace.yaml
+  - serviceaccounts.yaml
+  - postgres.yaml
+  - api.yaml
+  - web.yaml
+  - media-delivery.yaml
+  - dispatcher.yaml
+  - watcher.yaml
+  - ingress.yaml
+  - networkpolicies.yaml
+
+# Non-secret settings shared by the Go workloads (envFrom). The name gets a
+# content hash, so a change rolls the pods. An overlay merges its own keys:
+# TRUSTED_PROXIES, REGISTRATION_OPEN, MAIL_BACKEND, SITE_NAME, and the
+# transcoder's resources if the nodes are small.
+configMapGenerator:
+  - name: hls-vod-config
+    literals:
+      - LOG_LEVEL=info
+      # Containers listen on every interface; the binaries default to loopback.
+      - HTTP_ADDR=:8080
+      - MEDIA_ROOT=/mnt/media
+      - DISPATCH_BACKEND=kubernetes
+      - MAX_CONCURRENT=1
+      - DATABASE_SECRET_NAME=hls-vod-db
+      - DATABASE_SECRET_KEY=DATABASE_URL
+      - MEDIA_PVC=media
+      - MEDIA_MOUNT_PATH=/mnt/media
+      - TRANSCODER_SERVICE_ACCOUNT=transcoder

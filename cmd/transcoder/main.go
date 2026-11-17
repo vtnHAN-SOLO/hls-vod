@@ -25,6 +25,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/vtnHAN-SOLO/hls-vod/internal/buildinfo"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/config"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/mediattl"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/model"
@@ -38,6 +39,7 @@ func main() {
 
 func realMain(args []string) int {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	buildinfo.LogStart(logger, "transcoder")
 
 	fs := flag.NewFlagSet("transcoder", flag.ContinueOnError)
 	movieID := fs.String("movie-id", "", "job mode: transcode this movie's sources/ file into library/{id}/")

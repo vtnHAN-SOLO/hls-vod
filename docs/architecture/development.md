@@ -15,12 +15,14 @@ cmd/
   transcoder/   --movie-id job mode; --input/--output for a manual run
   watcher/      one scan per run
   useradmin/    add / set-password / set-role / list (password never in argv or env)
+  migrate/      up / status over the embedded migrations (the cluster's migration step)
 internal/
   handler/      HTTP layer, thin
   service/      business rules
   store/        all SQL (pgx/v5)
   model/        domain types shared by the three layers
   config/       environment variables, fail fast
+  buildinfo/    the version stamped at build time: the start log line and build_info
   auth/         argon2id, HS256 tokens, opaque tokens, throttle
   clientip/     the client address behind trusted proxies
   mediapath/    the only place that turns untrusted names into paths
@@ -33,15 +35,20 @@ internal/
   ingest/       transcode into a version folder + the rows that describe it
   dispatch/     the dispatcher loop and its backends (local process, Kubernetes Job)
   mail/         Resend over REST, a log sender for development, a bounded outbox
+                (MAIL_BACKEND=none: no sender, for a cluster without mail)
   turnstile/    Cloudflare Turnstile siteverify
   pgtest/       throwaway Postgres for integration tests (testcontainers)
   oidctest/     a fake OpenID provider for tests
 migrations/     goose SQL files, embedded (tests apply the same files)
 tools/devingest dev only, never built into an image
-docker/         media-delivery nginx config template and its container test
+docker/         the Dockerfiles (Go app + transcoder, web, media-delivery), the web nginx
+                server and the media-delivery template with its container test
 web/            React + Vite + TypeScript SPA (src/components/ui: the design system,
                 src/content: the About page in Markdown)
-scripts/        media-delivery checks, demo-seed (8 synthetic demo movies)
+deploy/         Kustomize: base/ (every workload), overlays/local/ (kind), kind/ (the
+                cluster, Traefik, metrics-server)
+scripts/        media-delivery checks, image smoke tests, demo-seed (8 synthetic demo movies),
+                kind-up / kind-smoke / kind-down (the local cluster)
 docs/           openapi.yaml (the API contract) and this architecture
 ```
 
@@ -151,6 +158,7 @@ Every binary reads its configuration from environment variables only (`caarlos0/
 | Integration | every store query, the watcher and transcoder against a real tree, end-to-end api runs | a throwaway Postgres per test package via **testcontainers**; migrations applied from the same embedded files production uses |
 | Media | the transcoder on a generated clip | ffmpeg / ffprobe |
 | Container | media-delivery: signatures, 403 / 410, MIME, cache headers, CORS, path traversal, probes | the real nginx image via testcontainers |
+| Images | `make images-smoke`, outside the gate: UID 65532, no shell in the Go images, `migrate status`, the api read-only with `build_info`, the transcoder on a clip with subtitles, the web image's routes, cache and CSP, the media-delivery checks against the built image, sizes | the built images, and the developer's Postgres for `migrate status` (read only) |
 | External services | Google, Resend, Turnstile | never real: a fake OpenID provider (`internal/oidctest`: discovery, JWKS, authorize, token) and `httptest` fakes for Resend and siteverify |
 
 No test uses a real credential: every key and password is generated at test time with
@@ -170,7 +178,50 @@ Every change goes through a pull request, and `make check` must pass before it i
 | Secrets | `gitleaks detect` |
 | Go vulnerabilities | `govulncheck ./...` (a stdlib finding is fixed by bumping the pinned toolchain) |
 | Static security | `gosec ./...` |
+| Dockerfiles | hadolint, from its image pinned by digest |
+| Manifests | every kustomization under `deploy/` rendered and validated by kubeconform (strict), from its image pinned by digest |
 | Frontend | generated API types match `docs/openapi.yaml`, eslint, `tsc`, vitest |
 
 Dev tools are installed at pinned versions by `make setup`, which also installs a gitleaks
 pre-commit hook.
+
+## Container images
+
+`make images` builds four images for linux/amd64. Each runs as UID 65532 with a read-only root
+filesystem, only `/tmp` writable and every capability dropped.
+
+```mermaid
+flowchart LR
+    subgraph go["docker/Dockerfile"]
+        build["build stage<br/>golang, one go build<br/>for every binary"]
+        ff["static ffmpeg 8.1"]
+        app["app<br/>distroless static<br/>api, dispatcher, watcher,<br/>useradmin, migrate"]
+        tr["transcoder<br/>distroless static<br/>transcoder, ffmpeg, ffprobe"]
+        build --> app
+        build --> tr
+        ff --> tr
+    end
+    subgraph webdf["docker/web.Dockerfile"]
+        node["build stage<br/>node + pnpm<br/>pnpm build, header include"]
+        web["web<br/>nginx-unprivileged<br/>the SPA"]
+        node --> web
+    end
+    md["media-delivery<br/>nginx-unprivileged<br/>template + key guard"]
+```
+
+- **Pinned:** every base image is pinned by tag and digest. The Go binaries carry the git commit
+  they were built from (`internal/buildinfo`, set with `-ldflags`) and log it at start; the api
+  and the dispatcher expose it as `build_info{version}`.
+- **Distroless, not scratch:** the Go images need CA certificates (TLS to the mail, sign-in and
+  bot-check services), tzdata and a nonroot user, and nothing else: no shell, no package
+  manager.
+- **No default command in `app`:** five programs share it, so each workload names the one it
+  runs. The transcoder image's entrypoint is the transcoder; a Job passes only its arguments.
+- **The web image** serves the build output: routes fall back to `index.html`, a missing
+  `/assets/` file is a 404, hashed assets are cached for a year. Its security headers are
+  generated from `web/security-headers.json` when the image is built, the same file the
+  development preview serves.
+- **media-delivery** bakes in the config template and the start-up guard; the signing key only
+  arrives from the environment at start.
+- **The build context** is an allowlist (`.dockerignore`): no environment file, local media,
+  git metadata or dependency folder can enter an image.

@@ -75,7 +75,8 @@ func CheckPassword(p string) error {
 }
 
 // Hasher hashes and verifies passwords. At most maxConcurrent hashes run at
-// once: each one takes 19 MiB, and the api pod's memory limit is 256Mi.
+// once: each one takes 19 MiB, beside a poster being processed in the api
+// pod's 512Mi (internal/poster).
 type Hasher struct {
 	sem chan struct{}
 

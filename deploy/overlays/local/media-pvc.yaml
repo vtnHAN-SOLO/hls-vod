@@ -1,0 +1,11 @@
+# The media tree (inbox/, sources/, library/) on kind's default storage
+# class. The watcher's first run creates the three folders.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: media
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi

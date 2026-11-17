@@ -1,0 +1,70 @@
+# The watcher: one scan every 5 minutes (purge, cleanup, subtitles, prune,
+# reconcile, claim). Forbid: a slow run is never joined by a second one,
+# although two would be safe (the rename into sources/ is the lock). Its
+# first run on an empty volume creates inbox/, sources/ and library/.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: watcher
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: watcher
+        spec:
+          restartPolicy: Never
+          serviceAccountName: watcher
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: watcher
+              image: hls-vod/app
+              command: ["/usr/local/bin/watcher"]
+              envFrom:
+                - configMapRef:
+                    name: hls-vod-config
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: hls-vod-db
+                      key: DATABASE_URL
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 500m
+                  memory: 128Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: media
+                  mountPath: /mnt/media
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: media
+              persistentVolumeClaim:
+                claimName: media
+            - name: tmp
+              emptyDir: {}

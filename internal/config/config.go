@@ -67,9 +67,10 @@ type API struct {
 	// never a guess. Everything else (login, verify, resend) works either way.
 	RegistrationOpen bool `env:"REGISTRATION_OPEN,required,notEmpty"`
 
-	// MailBackend is "resend" (send through Resend) or "log" (write every
-	// mail, link included, to the api log; refused off loopback). Required,
-	// no default.
+	// MailBackend is "resend" (send through Resend), "log" (write every
+	// mail, link included, to the api log; refused off loopback) or "none"
+	// (no mail at all: a deployment without a mail service, such as a local
+	// cluster; refused while registration is open). Required, no default.
 	MailBackend string `env:"MAIL_BACKEND,required,notEmpty"`
 	// SiteName is the product's name in mails (subjects, bodies, signature).
 	// A deployment may call the product something else; the default is the
@@ -113,6 +114,7 @@ func (a API) GoogleEnabled() bool { return a.GoogleClientID != "" }
 const (
 	MailBackendResend = "resend"
 	MailBackendLog    = "log"
+	MailBackendNone   = "none"
 )
 
 // MinJWTKeyLen is the shortest JWT_SIGNING_KEY accepted, in bytes.
@@ -177,8 +179,13 @@ func (a API) validateRegistration() []error {
 			errs = append(errs, fmt.Errorf("MAIL_BACKEND=log writes mail links to the log, for local development only: "+
 				"refusing to start with it while HTTP_ADDR=%q is not a loopback address", a.HTTPAddr))
 		}
+	case MailBackendNone:
+		if a.RegistrationOpen {
+			errs = append(errs, errors.New("MAIL_BACKEND=none sends no mail, so registration cannot verify addresses: "+
+				"set REGISTRATION_OPEN=false or choose a mail backend"))
+		}
 	default:
-		errs = append(errs, fmt.Errorf(`MAIL_BACKEND must be "resend" or "log", got %q`, a.MailBackend))
+		errs = append(errs, fmt.Errorf(`MAIL_BACKEND must be "resend", "log" or "none", got %q`, a.MailBackend))
 	}
 	if a.RegistrationOpen {
 		for name, v := range map[string]string{
@@ -387,6 +394,14 @@ func (t TranscoderJob) Validate() error {
 
 // UserAdmin is the configuration for cmd/useradmin.
 type UserAdmin struct {
+	Common
+
+	// DatabaseURL is a secret (it embeds credentials). No default.
+	DatabaseURL string `env:"DATABASE_URL,required,notEmpty"`
+}
+
+// Migrate is the configuration for cmd/migrate.
+type Migrate struct {
 	Common
 
 	// DatabaseURL is a secret (it embeds credentials). No default.

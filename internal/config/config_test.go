@@ -373,7 +373,13 @@ func TestLoadAPIRegistration(t *testing.T) {
 		{name: "REGISTRATION_OPEN must not be empty", env: with(closed, "REGISTRATION_OPEN", ""), wantErr: "REGISTRATION_OPEN"},
 		{name: "REGISTRATION_OPEN must be a bool", env: with(closed, "REGISTRATION_OPEN", "maybe"), wantErr: `"RegistrationOpen" of type "bool"`},
 		{name: "MAIL_BACKEND is required", env: with(closed, "MAIL_BACKEND", "-"), wantErr: "MAIL_BACKEND"},
-		{name: "MAIL_BACKEND must be known", env: with(closed, "MAIL_BACKEND", "smtp"), wantErr: `MAIL_BACKEND must be "resend" or "log"`},
+		{name: "MAIL_BACKEND must be known", env: with(closed, "MAIL_BACKEND", "smtp"), wantErr: `MAIL_BACKEND must be "resend", "log" or "none"`},
+		{name: "none backend, closed, off loopback", env: with(closed, "MAIL_BACKEND", "none", "HTTP_ADDR", ":8080"), check: func(t *testing.T, c API) {
+			if c.MailBackend != "none" {
+				t.Errorf("config = %+v", c)
+			}
+		}},
+		{name: "none backend refused while open", env: with(open, "MAIL_BACKEND", "none"), wantErr: "MAIL_BACKEND=none"},
 		{name: "closed, log backend, nothing else", env: with(closed), check: func(t *testing.T, c API) {
 			if c.RegistrationOpen || c.MailBackend != "log" || c.MailDailyCap != 90 {
 				t.Errorf("config = %+v", c)

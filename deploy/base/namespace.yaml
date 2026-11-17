@@ -1,0 +1,14 @@
+# Pod Security Standards "restricted", enforced: a pod that runs as root,
+# keeps a capability, mounts a hostPath or skips seccomp is refused at
+# admission. audit and warn report the same level.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hls-vod
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest

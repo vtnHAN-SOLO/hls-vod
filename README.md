@@ -103,7 +103,7 @@ Screenshots show only the synthetic demo movies `make demo-seed` generates.
 | Media | ffmpeg / ffprobe, HLS, nginx (`secure_link`) |
 | Frontend | React, Vite, TypeScript, Tailwind CSS, hls.js, TanStack Query, openapi-typescript + openapi-fetch |
 | Data | Postgres 16 |
-| Platform | Docker, Kubernetes (Jobs, CronJob, HPA); Kustomize manifests and Flux in progress |
+| Platform | Docker, Kubernetes (Jobs, CronJob, HPA, NetworkPolicy), Kustomize, kind for a local cluster; Flux in progress |
 | Quality | golangci-lint, gosec, govulncheck, gitleaks, testcontainers-go, vitest |
 
 ## Quick start
@@ -125,6 +125,36 @@ Put a movie in the catalog: drop it into `$MEDIA_ROOT/inbox/`, then run `make sc
 and `make dispatch` (dispatcher with the local backend), or use `make dev-ingest
 INPUT=movie.mp4 TITLE="My test"`. `make demo-seed` adds eight synthetic demo movies (ffmpeg test
 sources and fractals, invented titles) to look around with.
+
+The whole stack also runs on a local Kubernetes cluster: `make images && make kind-up`, then
+`make kind-smoke` (kind and kubectl come with `make setup`; it uses 127.0.0.1:8080, so stop
+`make run` first).
+
+## Turning on registration and Google sign-in
+
+Out of the box, accounts come only from `make user-add`. Registration and Google sign-in are
+switched on with variables in `.env` (names in [.env.example](.env.example), which says what
+each one does); `make run` reads them at start.
+
+| Feature | `make run` (dev) | `make kind-up` | What you need |
+|---|---|---|---|
+| Registration + email verification, no outside account | `REGISTRATION_OPEN=true`, `MAIL_BACKEND=log`, `MAIL_FROM`, `PUBLIC_BASE_URL=http://127.0.0.1:5173`, `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` set to Cloudflare's [test keys](https://developers.cloudflare.com/turnstile/troubleshooting/testing/) (the pair that always passes) | off | nothing: the mail, link included, is printed in the `make run` log instead of sent |
+| Registration with real mail | as above, but `MAIL_BACKEND=resend` and `RESEND_API_KEY` | off | a [Resend](https://resend.com) API key and a sending domain; real Turnstile keys from the Cloudflare dashboard for a public site |
+| Sign in with Google | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `PUBLIC_BASE_URL` | off | your own OAuth client ("Web application") in the [Google Cloud console](https://console.cloud.google.com/apis/credentials), with the authorized redirect URI given in `.env.example` (`http://127.0.0.1:5173/api/v1/auth/google/callback` for `make web-dev`) |
+
+With the first row: open http://127.0.0.1:5173/register (the Turnstile widget passes by itself
+with the test keys), sign up, copy the `/verify-email#token=…` link from the api's log line
+`mail not sent (MAIL_BACKEND=log)` into the browser, and you are signed in; logging in before
+that is refused until the address is confirmed. `MAIL_FROM` needs single quotes in `.env`
+(`MAIL_FROM='HLS VOD <noreply@example.com>'`), and the api accepts `MAIL_BACKEND=log` only on a
+loopback address, which `make run` is. Never commit a key, not even a test one: `.env` is
+gitignored.
+
+**The kind cluster has all three off, on purpose.** `make kind-up` generates only random secrets
+(database password, signing keys) and has no mail service, Turnstile keys or Google client, so its
+overlay sets `MAIL_BACKEND=none` and `REGISTRATION_OPEN=false`, and Google stays off; you log in as
+the `admin` it creates. [docs/architecture/physical.md](docs/architecture/physical.md#the-local-cluster-and-production)
+lists what differs between the local cluster and production.
 
 ## Testing
 

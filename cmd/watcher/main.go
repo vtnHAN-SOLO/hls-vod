@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vtnHAN-SOLO/hls-vod/internal/buildinfo"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/config"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/mediapath"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/model"
@@ -38,6 +39,7 @@ func main() {
 
 func realMain() int {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	buildinfo.LogStart(logger, "watcher")
 
 	cfg, err := config.Load[config.Watcher]()
 	if err != nil {

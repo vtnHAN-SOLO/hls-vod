@@ -1,0 +1,45 @@
+# An ALLOWLIST: everything is ignored, then only what the image builds need
+# is let back in (docker/Dockerfile, docker/web.Dockerfile,
+# docker/media-delivery.Dockerfile).
+#
+# Never in the build context, whatever is added below: .env and every other
+# secret file, web/.env.local (the deployment's brand), var/ and any media
+# file, .git, node_modules, bin/, web/dist. The re-excludes at the end keep
+# them out even inside an allowed directory.
+*
+
+# Go: module files and the code the binaries are built from.
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!migrations/
+
+# web: what `pnpm install` and `pnpm build` read.
+!web/package.json
+!web/pnpm-lock.yaml
+!web/pnpm-workspace.yaml
+!web/index.html
+!web/vite.config.ts
+!web/tsconfig.json
+!web/tsconfig.node.json
+!web/security-headers.json
+!web/public/
+!web/src/
+!web/scripts/
+
+# nginx configs and the media-delivery start-up guard.
+!docker/web/
+!docker/nginx-media/default.conf.template
+!docker/nginx-media/05-require-media-signing-key.sh
+
+# Re-excluded everywhere, even under the directories above.
+**/.env
+**/.env.*
+**/node_modules
+**/dist
+**/*_test.go
+**/testdata
+**/*.mkv
+**/*.mp4
+**/*.mov

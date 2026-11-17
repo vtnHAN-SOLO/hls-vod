@@ -31,6 +31,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/vtnHAN-SOLO/hls-vod/internal/auth"
+	"github.com/vtnHAN-SOLO/hls-vod/internal/buildinfo"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/config"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/model"
 	"github.com/vtnHAN-SOLO/hls-vod/internal/store"
@@ -64,6 +65,7 @@ func main() {
 
 func realMain(args []string) int {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	buildinfo.LogStart(logger, "useradmin")
 	cfg, err := config.Load[config.UserAdmin]()
 	if err != nil {
 		logger.Error("startup failed", "err", err)
