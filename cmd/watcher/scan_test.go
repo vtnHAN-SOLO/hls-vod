@@ -128,6 +128,40 @@ func TestWatcher(t *testing.T) {
 		}
 	})
 
+	// MPEG-TS recordings: any case of the extension, never a partial download.
+	for _, tt := range []struct {
+		name    string
+		claimed bool
+		source  string // the claimed source's extension
+	}{
+		{"movie.ts", true, ".ts"},
+		{"MOVIE.TS", true, ".ts"},
+		{"movie.m2ts", true, ".m2ts"},
+		{"movie.ts.part", false, ""},
+	} {
+		t.Run("MPEG-TS "+tt.name, func(t *testing.T) {
+			e := setup(t)
+			writeOld(t, filepath.Join(e.dir, medialayout.Inbox, tt.name), "movie")
+			r, err := newScanner(e, st).run(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			rs := rows(t)
+			if !tt.claimed {
+				if r.Claimed != 0 || len(rs) != 0 {
+					t.Fatalf("claimed %s: report %+v, rows %+v", tt.name, r, rs)
+				}
+				assertEntries(t, filepath.Join(e.dir, medialayout.Inbox), tt.name)
+				return
+			}
+			if r.Claimed != 1 || len(rs) != 1 || !strings.HasSuffix(rs[0].source, tt.source) || rs[0].title != "movie" && rs[0].title != "MOVIE" {
+				t.Fatalf("report %+v, rows %+v; want one claim ending in %s", r, rs, tt.source)
+			}
+			assertQueued(t, e, rs)
+			assertEntries(t, filepath.Join(e.dir, medialayout.Inbox))
+		})
+	}
+
 	t.Run("claims eligible files and titles them from the original name", func(t *testing.T) {
 		e := setup(t)
 		inbox := filepath.Join(e.dir, medialayout.Inbox)

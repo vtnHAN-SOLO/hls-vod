@@ -19,7 +19,7 @@ import (
 // outside the repo. Every test writes its own output under t.TempDir().
 var fixtures struct {
 	dir      string
-	h264AAC  string // 1280x720 H.264 yuv420p + AAC, 7s  -> remuxable
+	h264AAC  string // 1920x1080 H.264 yuv420p + AAC, 7s  -> remuxable
 	misnamed string // named "h264-aac.mp4" but MPEG-4 Part 2 + MP2, 640x360
 	h264AC3  string // H.264 + AC-3 -> video fine, audio not
 	noAudio  string // H.264 only -> remuxable
@@ -103,7 +103,7 @@ func makeFixtures(dir string) error {
 		return []string{"-f", "lavfi", "-i", "sine=frequency=" + hz + ":sample_rate=48000:duration=" + dur}
 	}
 	steps := []func() error{
-		func() error { return gen(f.h264AAC, video("1280x720"), audio, x264, []string{"-c:a", "aac"}) },
+		func() error { return gen(f.h264AAC, video("1920x1080"), audio, x264, []string{"-c:a", "aac"}) },
 		func() error {
 			return gen(f.misnamed, video("640x360"), audio, []string{"-c:v", "mpeg4", "-c:a", "mp2"})
 		},
@@ -164,7 +164,7 @@ func TestProbe(t *testing.T) {
 		{
 			name:  "h264 aac",
 			path:  fixtures.h264AAC,
-			want:  ProbeResult{VideoCodec: "h264", Width: 1280, Height: 720, PixFmt: "yuv420p", AudioCodec: "aac"},
+			want:  ProbeResult{VideoCodec: "h264", Width: 1920, Height: 1080, PixFmt: "yuv420p", AudioCodec: "aac"},
 			remux: true,
 		},
 		{
@@ -274,7 +274,7 @@ func TestRemuxDecisionIgnoresExtension(t *testing.T) {
 }
 
 func TestRemux(t *testing.T) {
-	out := filepath.Join(t.TempDir(), "720p")
+	out := filepath.Join(t.TempDir(), "1080p")
 	start := time.Now()
 	if err := Remux(t.Context(), fixtures.h264AAC, out, nil); err != nil {
 		t.Fatal(err)
@@ -286,7 +286,7 @@ func TestRemux(t *testing.T) {
 		t.Fatal(err)
 	}
 	// -c copy: identical codec, resolution and audio.
-	if got.VideoCodec != "h264" || got.Height != 720 || got.Width != 1280 || got.AudioCodec != "aac" {
+	if got.VideoCodec != "h264" || got.Height != 1080 || got.Width != 1920 || got.AudioCodec != "aac" {
 		t.Fatalf("remuxed rung = %+v", got)
 	}
 	if n := countSegments(t, out); n < 2 {
@@ -408,8 +408,8 @@ func TestLadderEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := rungNames(rungs); got != "720p(remux),480p" {
-		t.Fatalf("ladder = %s, want 720p(remux),480p", got)
+	if got := rungNames(rungs); got != "1080p(remux),720p" {
+		t.Fatalf("ladder = %s, want 1080p(remux),720p", got)
 	}
 
 	var variants []Variant
@@ -439,7 +439,7 @@ func TestLadderEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := readFile(t, master)
-	for _, want := range []string{"RESOLUTION=1280x720", "RESOLUTION=854x480", "720p/index.m3u8", "480p/index.m3u8"} {
+	for _, want := range []string{"RESOLUTION=1920x1080", "RESOLUTION=1280x720", "1080p/index.m3u8", "720p/index.m3u8"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("master missing %q:\n%s", want, body)
 		}

@@ -98,7 +98,7 @@ func ingestMovie(ctx context.Context, log *slog.Logger, cat catalog, req request
 	}
 	ext, ok := medialayout.VideoExt(filepath.Base(input))
 	if !ok {
-		return "", fmt.Errorf("input %s: not a video file the watcher would take (mkv, mp4, m4v, mov, avi, webm)", input)
+		return "", fmt.Errorf("input %s: not a video file the watcher would take (mkv, mp4, m4v, mov, avi, webm, ts, m2ts)", input)
 	}
 
 	root, err := filepath.Abs(req.MediaRoot)

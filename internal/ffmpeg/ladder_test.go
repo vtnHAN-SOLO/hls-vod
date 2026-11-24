@@ -62,21 +62,22 @@ func TestPlanLadder(t *testing.T) {
 		src  ProbeResult
 		want string
 	}{
-		{"2160p remux", h264(2160), "2160p(remux),1080p,720p,480p"},
-		{"1080p remux", h264(1080), "1080p(remux),720p,480p"},
-		{"1080p hevc encodes top rung", hevc(1080), "1080p,720p,480p"},
-		{"720p never gets 1080p", h264(720), "720p(remux),480p"},
+		{"2160p remux", h264(2160), "2160p(remux),1080p,720p"},
+		{"1080p remux", h264(1080), "1080p(remux),720p"},
+		{"1080p hevc encodes top rung", hevc(1080), "1080p,720p"},
+		{"720p never gets 1080p", h264(720), "720p(remux)"},
 		{"480p is a single rung", h264(480), "480p(remux)"},
 		{"360p below every standard rung", h264(360), "360p(remux)"},
-		{"widescreen 800 tall", h264(800), "800p(remux),720p,480p"},
-		{"odd height remux keeps it", h264(817), "817p(remux),720p,480p"},
-		{"odd height encode rounds down", hevc(817), "816p,720p,480p"},
-		{"h264 + ac3 copies video", withAudio(h264(1080), "ac3", 6), "1080p(copy-video),720p,480p"},
-		{"h264 + dts copies video", withAudio(h264(1080), "dts", 6), "1080p(copy-video),720p,480p"},
-		{"h264 + 5.1 aac copies video", withAudio(h264(720), "aac", 6), "720p(copy-video),480p"},
-		{"odd height copy-video keeps it", withAudio(h264(817), "eac3", 6), "817p(copy-video),720p,480p"},
-		{"10-bit h264 encodes", hi10p(1080), "1080p,720p,480p"},
-		{"10-bit h264 with ac3 still encodes", withAudio(hi10p(720), "ac3", 6), "720p,480p"},
+		{"widescreen 800 tall", h264(800), "800p(remux),720p"},
+		{"odd height remux keeps it", h264(817), "817p(remux),720p"},
+		{"odd height encode rounds down", hevc(817), "816p,720p"},
+		{"h264 + ac3 copies video", withAudio(h264(1080), "ac3", 6), "1080p(copy-video),720p"},
+		{"h264 + dts copies video", withAudio(h264(1080), "dts", 6), "1080p(copy-video),720p"},
+		{"h264 + 5.1 aac copies video", withAudio(h264(720), "aac", 6), "720p(copy-video)"},
+		{"odd height copy-video keeps it", withAudio(h264(817), "eac3", 6), "817p(copy-video),720p"},
+		{"10-bit h264 encodes", hi10p(1080), "1080p,720p"},
+		{"10-bit h264 with ac3 still encodes", withAudio(hi10p(720), "ac3", 6), "720p"},
+		{"540p sits between the lower rungs", h264(540), "540p(remux)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

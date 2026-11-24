@@ -311,7 +311,8 @@ movies (
 
 renditions (
   id, movie_id → movies ON DELETE CASCADE,
-  height NOT NULL,                 -- 720, 480 … never above source height
+  height NOT NULL,                 -- the source height, then 1080 and 720 below it;
+                                   -- never above source height (older movies may have 480)
   bitrate_kbps, playlist_path NOT NULL, size_bytes,
   created_at, updated_at,
   UNIQUE (movie_id, height)

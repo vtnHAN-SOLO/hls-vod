@@ -32,7 +32,11 @@ const (
 
 // videoExts are the source containers the watcher claims and devingest
 // accepts, lowercase and without the dot.
-var videoExts = map[string]bool{"mkv": true, "mp4": true, "m4v": true, "mov": true, "avi": true, "webm": true}
+// ts and m2ts are MPEG-TS (TV and camera recordings, Blu-ray streams).
+var videoExts = map[string]bool{
+	"mkv": true, "mp4": true, "m4v": true, "mov": true, "avi": true, "webm": true,
+	"ts": true, "m2ts": true,
+}
 
 // VideoExt returns the lowercase extension of name (without the dot) and
 // whether it is a video container we ingest. "Movie.MKV" is ("mkv", true);

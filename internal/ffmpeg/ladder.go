@@ -38,7 +38,7 @@ type Rung struct {
 }
 
 // lowerRungs are the standard heights encoded below the top rung.
-var lowerRungs = []int{1080, 720, 480}
+var lowerRungs = []int{1080, 720}
 
 // bitrateTiers maps a height to its video maxrate. A height between tiers
 // gets the next tier up, so an 800-pixel-tall widescreen top rung is
